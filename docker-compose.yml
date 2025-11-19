@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  budgetapp:
+    build:
+      context: .
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
