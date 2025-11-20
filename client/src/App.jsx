@@ -34,13 +34,61 @@ const TAX_TABLE_MAP = TAX_TABLES.reduce((acc, table) => {
   return acc;
 }, {});
 
-const initialExtraCost = { name: "", amount: "", frequency: "monthly", shareWithEx: false };
+const formatCurrencyPreview = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return "";
+  }
+  return SEK.format(parsed);
+};
+
+const formatMagnitudeLabel = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return "";
+  }
+  if (parsed >= 1_000_000) {
+    return `≈ ${NUMBER.format(parsed / 1_000_000)} miljoner kr`;
+  }
+  if (parsed >= 1_000) {
+    return `≈ ${NUMBER.format(parsed / 1_000)} tusen kr`;
+  }
+  return `≈ ${SEK.format(parsed)}`;
+};
+
+const formatAmountPreview = (value) => {
+  const currency = formatCurrencyPreview(value);
+  const magnitude = formatMagnitudeLabel(value);
+  if (!currency && !magnitude) {
+    return "";
+  }
+  if (currency && magnitude) {
+    return `${currency} · ${magnitude}`;
+  }
+  return currency || magnitude;
+};
+
+const DEFAULT_CATEGORIES = [
+  { id: "drift", name: "Drift & hushåll" },
+  { id: "mat", name: "Mat & dagligvaror" },
+  { id: "underhall", name: "Underhållning" },
+];
+
+const initialExtraCost = {
+  name: "",
+  amount: "",
+  frequency: "monthly",
+  shareWithEx: false,
+  categoryId: DEFAULT_CATEGORIES[0].id,
+};
 const initialPropertyInfo = { name: "", value: "" };
 const initialSavingsItem = { name: "", amount: "", frequency: "monthly" };
 const STORAGE_KEY = "budgetapp:savedLoanData";
 
 const createCostId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createCategoryId = () => createCostId();
 
 const createPersonId = () => createCostId();
 
@@ -224,6 +272,10 @@ function App() {
   const [newCost, setNewCost] = useState(initialExtraCost);
   const [editingCostId, setEditingCostId] = useState(null);
   const [editingCost, setEditingCost] = useState(initialExtraCost);
+  const [costCategories, setCostCategories] = useState(DEFAULT_CATEGORIES);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
   const [propertyInfo, setPropertyInfo] = useState(initialPropertyInfo);
   const [savingsItems, setSavingsItems] = useState([]);
   const [newSavings, setNewSavings] = useState(initialSavingsItem);
@@ -249,6 +301,16 @@ function App() {
 
   const propertyValueNumber = Number(propertyInfo.value);
   const hasPropertyValue = Number.isFinite(propertyValueNumber) && propertyValueNumber > 0;
+  const propertyValuePreview = formatAmountPreview(propertyInfo.value);
+  const ensureCategoryId = useCallback(
+    (candidate) => {
+      if (candidate && costCategories.some((category) => category.id === candidate)) {
+        return candidate;
+      }
+      return costCategories[0]?.id ?? DEFAULT_CATEGORIES[0].id;
+    },
+    [costCategories],
+  );
   const formatCurrencyDiff = (value) => {
     const formatted = SEK.format(Math.abs(value));
     if (value > 0) {
@@ -989,6 +1051,21 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    setNewCost((prev) => {
+      const nextCategoryId = ensureCategoryId(prev.categoryId);
+      return prev.categoryId === nextCategoryId
+        ? prev
+        : { ...prev, categoryId: nextCategoryId };
+    });
+    setEditingCost((prev) => {
+      const nextCategoryId = ensureCategoryId(prev.categoryId);
+      return prev.categoryId === nextCategoryId
+        ? prev
+        : { ...prev, categoryId: nextCategoryId };
+    });
+  }, [ensureCategoryId]);
+
   const showFeedback = (message) => {
     if (feedbackTimeout.current) {
       clearTimeout(feedbackTimeout.current);
@@ -1036,6 +1113,10 @@ function App() {
     setNewSavings(initialSavingsItem);
     setEditingCostId(null);
     setEditingCost(initialExtraCost);
+    setCostCategories(DEFAULT_CATEGORIES);
+    setNewCategoryName("");
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
     setPropertyInfo(initialPropertyInfo);
     setResult(null);
     setError("");
@@ -1300,17 +1381,20 @@ function App() {
       showFeedback("Ange namn och belopp (större än 0 kr).");
       return;
     }
+    const categoryId = ensureCategoryId(newCost.categoryId);
     const item = {
       id: createCostId(),
       name: newCost.name.trim(),
       amount: amountValue,
       frequency: formatCostFrequency(newCost.frequency),
       shareWithEx: Boolean(newCost.shareWithEx),
+      categoryId,
     };
     setCostItems((prev) => [...prev, item]);
     setNewCost((prev) => ({
       ...initialExtraCost,
       frequency: prev.frequency,
+      categoryId,
     }));
   };
 
@@ -1321,12 +1405,16 @@ function App() {
       amount: String(item.amount),
       frequency: item.frequency,
       shareWithEx: Boolean(item.shareWithEx),
+      categoryId: ensureCategoryId(item.categoryId),
     });
   };
 
   const cancelEditingCost = () => {
     setEditingCostId(null);
-    setEditingCost(initialExtraCost);
+    setEditingCost({
+      ...initialExtraCost,
+      categoryId: ensureCategoryId(initialExtraCost.categoryId),
+    });
   };
 
   const saveEditingCostItem = () => {
@@ -1347,6 +1435,7 @@ function App() {
               amount: amountValue,
               frequency: formatCostFrequency(editingCost.frequency),
               shareWithEx: Boolean(editingCost.shareWithEx),
+              categoryId: ensureCategoryId(editingCost.categoryId),
             }
           : item,
       ),
@@ -1360,6 +1449,92 @@ function App() {
     if (editingCostId === id) {
       cancelEditingCost();
     }
+  };
+
+  const handleAddCategory = () => {
+    const trimmed = newCategoryName.trim();
+    if (!trimmed) {
+      showFeedback("Ange ett kategorinamn.");
+      return;
+    }
+    if (
+      costCategories.some(
+        (category) => category.name.toLowerCase() === trimmed.toLowerCase(),
+      )
+    ) {
+      showFeedback("Kategorin finns redan.");
+      return;
+    }
+    const newCategory = {
+      id: createCategoryId(),
+      name: trimmed,
+    };
+    setCostCategories((prev) => [...prev, newCategory]);
+    setNewCategoryName("");
+    showFeedback("Ny kategori tillagd ✅");
+  };
+
+  const startEditCategory = (category) => {
+    setEditingCategoryId(category.id);
+    setEditingCategoryName(category.name);
+  };
+
+  const cancelEditCategory = () => {
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
+  };
+
+  const saveEditCategory = () => {
+    if (!editingCategoryId) {
+      return;
+    }
+    const trimmed = editingCategoryName.trim();
+    if (!trimmed) {
+      showFeedback("Ange ett kategorinamn.");
+      return;
+    }
+    if (
+      costCategories.some(
+        (category) =>
+          category.id !== editingCategoryId &&
+          category.name.toLowerCase() === trimmed.toLowerCase(),
+      )
+    ) {
+      showFeedback("Det finns redan en kategori med det namnet.");
+      return;
+    }
+    setCostCategories((prev) =>
+      prev.map((category) =>
+        category.id === editingCategoryId ? { ...category, name: trimmed } : category,
+      ),
+    );
+    cancelEditCategory();
+    showFeedback("Kategori uppdaterad ✅");
+  };
+
+  const handleRemoveCategory = (categoryId) => {
+    if (costCategories.length <= 1) {
+      showFeedback("Du behöver minst en kategori.");
+      return;
+    }
+    const updatedCategories = costCategories.filter((category) => category.id !== categoryId);
+    const fallbackId = updatedCategories[0]?.id ?? DEFAULT_CATEGORIES[0].id;
+    setCostCategories(updatedCategories);
+    setCostItems((prev) =>
+      prev.map((item) =>
+        item.categoryId === categoryId ? { ...item, categoryId: fallbackId } : item,
+      ),
+    );
+    setNewCost((prev) =>
+      prev.categoryId === categoryId ? { ...prev, categoryId: fallbackId } : prev,
+    );
+    setEditingCost((prev) =>
+      prev.categoryId === categoryId ? { ...prev, categoryId: fallbackId } : prev,
+    );
+    if (editingCategoryId === categoryId) {
+      cancelEditCategory();
+    }
+    showFeedback("Kategori borttagen.");
   };
 
   return (
@@ -1529,6 +1704,9 @@ function App() {
                   onChange={handlePropertyInfoChange}
                   placeholder="t.ex. 5 000 000"
                 />
+                {propertyValuePreview && (
+                  <span className="input-preview">{propertyValuePreview}</span>
+                )}
               </label>
             </div>
             {hasPropertyValue && activeLoanPrincipal > 0 && (
@@ -1559,86 +1737,90 @@ function App() {
               </div>
             </div>
             <div className="loan-grid">
-              {loans.map((loan, index) => (
-                <article key={loan.id} className="loan-card">
-                  <div className="loan-card-header">
-                    <label>
-                      <span>Lånenamn</span>
-                      <input
-                        type="text"
-                        value={loan.name}
-                        onChange={(event) => handleLoanChange(loan.id, "name", event.target.value)}
-                        placeholder={`Lån ${index + 1}`}
-                      />
-                    </label>
-                  </div>
-                  <div className="loan-card-grid">
-                    <label>
-                      <span>Belopp (kr)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        value={loan.amount}
-                        onChange={(event) => handleLoanChange(loan.id, "amount", event.target.value)}
-                        placeholder="t.ex. 1 500 000"
-                      />
-                    </label>
-                    <label>
-                      <span>Ränta (%)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={loan.annualInterestRate}
-                        onChange={(event) =>
-                          handleLoanChange(loan.id, "annualInterestRate", event.target.value)
-                        }
-                        placeholder="t.ex. 4.2"
-                      />
-                    </label>
-                    <label>
-                      <span>Amortering (% av lån/år)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        value={loan.amortizationPercent}
-                        onChange={(event) =>
-                          handleLoanChange(loan.id, "amortizationPercent", event.target.value)
-                        }
-                        placeholder="t.ex. 2"
-                      />
-                    </label>
-                    <label>
-                      <span>Räntetyp</span>
-                      <select
-                        value={loan.rateType || "variable"}
-                        onChange={(event) =>
-                          handleLoanChange(loan.id, "rateType", event.target.value)
-                        }
-                      >
-                        <option value="variable">Rörlig</option>
-                        <option value="fixed">Bunden</option>
-                      </select>
-                    </label>
-                    {loan.rateType === "fixed" && (
+              {loans.map((loan, index) => {
+                const amountPreview = formatAmountPreview(loan.amount);
+                return (
+                  <article key={loan.id} className="loan-card">
+                    <div className="loan-card-header">
                       <label>
-                        <span>Bunden (år)</span>
+                        <span>Lånenamn</span>
                         <input
-                          type="number"
-                          min="1"
-                          max="30"
-                          value={loan.fixedTermYears}
-                          onChange={(event) =>
-                            handleLoanChange(loan.id, "fixedTermYears", event.target.value)
-                          }
-                          placeholder="t.ex. 3"
+                          type="text"
+                          value={loan.name}
+                          onChange={(event) => handleLoanChange(loan.id, "name", event.target.value)}
+                          placeholder={`Lån ${index + 1}`}
                         />
                       </label>
-                    )}
-                  </div>
-                </article>
-              ))}
+                    </div>
+                    <div className="loan-card-grid">
+                      <label>
+                        <span>Belopp (kr)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={loan.amount}
+                          onChange={(event) => handleLoanChange(loan.id, "amount", event.target.value)}
+                          placeholder="t.ex. 1 500 000"
+                        />
+                        {amountPreview && <span className="input-preview">{amountPreview}</span>}
+                      </label>
+                      <label>
+                        <span>Ränta (%)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={loan.annualInterestRate}
+                          onChange={(event) =>
+                            handleLoanChange(loan.id, "annualInterestRate", event.target.value)
+                          }
+                          placeholder="t.ex. 4.2"
+                        />
+                      </label>
+                      <label>
+                        <span>Amortering (% av lån/år)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={loan.amortizationPercent}
+                          onChange={(event) =>
+                            handleLoanChange(loan.id, "amortizationPercent", event.target.value)
+                          }
+                          placeholder="t.ex. 2"
+                        />
+                      </label>
+                      <label>
+                        <span>Räntetyp</span>
+                        <select
+                          value={loan.rateType || "variable"}
+                          onChange={(event) =>
+                            handleLoanChange(loan.id, "rateType", event.target.value)
+                          }
+                        >
+                          <option value="variable">Rörlig</option>
+                          <option value="fixed">Bunden</option>
+                        </select>
+                      </label>
+                      {loan.rateType === "fixed" && (
+                        <label>
+                          <span>Bunden (år)</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="30"
+                            value={loan.fixedTermYears}
+                            onChange={(event) =>
+                              handleLoanChange(loan.id, "fixedTermYears", event.target.value)
+                            }
+                            placeholder="t.ex. 3"
+                          />
+                        </label>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
             {manualLoanAverages && (
               <div className="loan-summary-banner">
@@ -1797,6 +1979,17 @@ function App() {
                 <option value="term">per termin (≈6 mån)</option>
                 <option value="season">per säsong (≈4 mån)</option>
               </select>
+              <select
+                name="categoryId"
+                value={newCost.categoryId}
+                onChange={handleNewCostChange}
+              >
+                {costCategories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
               <label className="share-toggle">
                 <input
                   type="checkbox"
@@ -1876,6 +2069,20 @@ function App() {
                               onChange={handleEditingCostChange}
                             />
                           </label>
+                          <label>
+                            <span>Kategori</span>
+                            <select
+                              name="categoryId"
+                              value={editingCost.categoryId}
+                              onChange={handleEditingCostChange}
+                            >
+                              {costCategories.map((category) => (
+                                <option key={category.id} value={category.id}>
+                                  {category.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                         </div>
                         <div className="cost-edit-actions">
                           <span className="cost-monthly">
@@ -1907,6 +2114,10 @@ function App() {
                                     ? "säsong"
                                     : "månad"}
                           </span>
+                            <span className="cost-meta">
+                              {costCategories.find((cat) => cat.id === item.categoryId)?.name ||
+                                "Kategori"}
+                            </span>
                             {item.shareWithEx && (
                               <span className="cost-meta shared">Din del (50%)</span>
                             )}
@@ -1941,6 +2152,70 @@ function App() {
                 Lägg till poster så räknas de om till månadskostnad (år/termin/säsong delas på 12/6/4).
               </p>
             )}
+            <div className="category-admin">
+              <div>
+                <h4>Kategorier</h4>
+                <p>Gruppera dina kostnader i egna kategorier för tydligare rapporter.</p>
+              </div>
+              <div className="category-add">
+                <input
+                  type="text"
+                  placeholder="Ny kategori (t.ex. Mat)"
+                  value={newCategoryName}
+                  onChange={(event) => setNewCategoryName(event.target.value)}
+                />
+                <button type="button" onClick={handleAddCategory} className="ghost">
+                  Lägg till kategori
+                </button>
+              </div>
+              <ul className="category-list">
+                {costCategories.map((category) => {
+                  const isEditing = editingCategoryId === category.id;
+                  return (
+                    <li key={category.id}>
+                      {isEditing ? (
+                        <>
+                          <input
+                            type="text"
+                            value={editingCategoryName}
+                            onChange={(event) => setEditingCategoryName(event.target.value)}
+                          />
+                          <div className="category-actions">
+                            <button type="button" className="ghost" onClick={saveEditCategory}>
+                              Spara
+                            </button>
+                            <button type="button" className="link-button" onClick={cancelEditCategory}>
+                              Avbryt
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <span>{category.name}</span>
+                          <div className="category-actions">
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => startEditCategory(category)}
+                            >
+                              Redigera
+                            </button>
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => handleRemoveCategory(category.id)}
+                              disabled={costCategories.length <= 1}
+                            >
+                              Ta bort
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           </section>
           <section className="savings-section">
             <div className="extra-header">

@@ -511,6 +511,74 @@
   gap: 0.5rem;
 }
 
+.category-admin {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.category-admin h4 {
+  margin: 0;
+}
+
+.category-admin p {
+  margin: 0;
+  color: #64748b;
+}
+
+.category-add {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.category-add input {
+  flex: 1;
+  min-width: 180px;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+  padding: 0.65rem 0.9rem;
+  font-size: 0.95rem;
+}
+
+.category-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.category-list li {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 0.65rem 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  background: #ffffff;
+}
+
+.category-list input {
+  flex: 1;
+  min-width: 160px;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+  padding: 0.55rem 0.75rem;
+}
+
+.category-actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
 .cost-item {
   display: flex;
   justify-content: space-between;
@@ -638,6 +706,13 @@
 .field-note {
   font-size: 0.85rem;
   color: #64748b;
+}
+
+.input-preview {
+  display: inline-block;
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+  color: #475569;
 }
 
 .field input {
