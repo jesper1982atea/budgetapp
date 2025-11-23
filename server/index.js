@@ -555,7 +555,7 @@ app.post("/api/tibber/price", async (req, res) => {
           currentSubscription {
             priceInfo { current { total } }
           }
-          consumption(resolution: MONTHLY, first: 1) { nodes { totalConsumption } }
+          consumption(resolution: MONTHLY, first: 1) { nodes { consumption } }
         }
       }
     }
@@ -569,17 +569,18 @@ app.post("/api/tibber/price", async (req, res) => {
       },
       body: JSON.stringify({ query }),
     });
+    const data = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error("Tibber-svar misslyckades");
+      const upstream = data?.errors?.[0]?.message || data?.message || response.statusText;
+      throw new Error(upstream || "Tibber-svar misslyckades");
     }
-    const data = await response.json();
     const home = data?.data?.viewer?.homes?.[0];
     const price = home?.currentSubscription?.priceInfo?.current?.total ?? null;
-    const annualConsumption = home?.consumption?.nodes?.[0]?.totalConsumption ?? null;
-    res.json({ price, annualConsumption });
+    const monthlyConsumption = home?.consumption?.nodes?.[0]?.consumption ?? null;
+    res.json({ price, monthlyConsumption });
   } catch (err) {
     console.error("Tibber fetch failed", err);
-    res.status(500).json({ error: "Kunde inte hämta Tibber-data." });
+    res.status(500).json({ error: `Kunde inte hämta Tibber-data: ${err.message || "okänt fel"}` });
   }
 });
 

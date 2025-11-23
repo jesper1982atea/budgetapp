@@ -359,8 +359,10 @@ function App() {
       setProfileName("Min profil");
       setActiveProfileId("");
       setShowOnboarding(false);
+    } else if (!profileName.trim()) {
+      setProfileName("Min profil");
     }
-  }, [currentUser]);
+  }, [currentUser, profileName]);
   const [outcomeMonth, setOutcomeMonth] = useState(
     new Date().toISOString().slice(0, 7),
   );
@@ -1831,6 +1833,10 @@ const refreshProfiles = useCallback(async () => {
       showFeedback("Logga in för att spara profil.");
       return;
     }
+    if (!currentUser) {
+      showFeedback("Logga in för att spara profil.");
+      return;
+    }
     const payload = buildProfilePayload();
     try {
       const method = activeProfileId ? "PUT" : "POST";
@@ -1861,15 +1867,12 @@ const refreshProfiles = useCallback(async () => {
     if (!name) {
       return undefined;
     }
-    if (!authToken) {
+    if (!authToken || !currentUser) {
       return undefined;
     }
     const payload = buildProfilePayload();
     const snapshot = JSON.stringify(payload);
     if (snapshot === lastSavedProfileSnapshot.current) {
-      return undefined;
-    }
-    if (!authToken) {
       return undefined;
     }
     if (autoSaveTimeout.current) {
@@ -1914,6 +1917,7 @@ const refreshProfiles = useCallback(async () => {
     savingsItems,
     electricity,
     propertyInfo,
+    propertyInsurance,
     costCategories,
     futureAmortizationPercent,
     taxAdjustmentEnabled,
@@ -1922,10 +1926,17 @@ const refreshProfiles = useCallback(async () => {
     outcomeEntries,
     outcomeExtras,
     authToken,
+    currentUser,
     activeProfileId,
     showPropertyForm,
     refreshProfiles,
   ]);
+
+  useEffect(() => {
+    if (!showPropertyForm && (propertyInfo.name?.trim() || propertyInfo.value)) {
+      setShowPropertyForm(true);
+    }
+  }, [propertyInfo.name, propertyInfo.value, showPropertyForm]);
 
   const handleDeleteProfile = async () => {
     if (!activeProfileId) {
