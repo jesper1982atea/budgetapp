@@ -1440,6 +1440,10 @@ const budgetOutcomeRows = useMemo(() => {
   };
 
   const handleTibberSync = async () => {
+    if (!authToken || !currentUser) {
+      showFeedback("Logga in innan du hämtar från Tibber.");
+      return;
+    }
     setAddressError("");
     if (!electricity.tibberToken) {
       setAddressError("Lägg in din Tibber-token först.");
