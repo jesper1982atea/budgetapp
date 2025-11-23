@@ -84,6 +84,8 @@ const initialExtraCost = {
 const initialPropertyInfo = { name: "", value: "" };
 const initialSavingsItem = { name: "", amount: "", frequency: "monthly" };
 const STORAGE_KEY = "budgetapp:savedLoanData";
+const TOKEN_KEY = "budgetapp:authToken";
+const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY;
 
 const createCostId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -142,9 +144,9 @@ const normalizeSavedLoans = (items) => {
     .slice(0, MAX_LOANS);
 };
 
-const createLoanRow = (index = 0) => ({
+const createLoanRow = (index = 0, baseName = "Lån") => ({
   id: createLoanId(),
-  name: `Lån ${index + 1}`,
+  name: `${baseName} ${index + 1}`,
   amount: "",
   annualInterestRate: "",
   amortizationPercent: "2",
@@ -152,8 +154,7 @@ const createLoanRow = (index = 0) => ({
   fixedTermYears: "3",
 });
 
-const createInitialLoans = () =>
-  Array.from({ length: MAX_LOANS }, (_, index) => createLoanRow(index));
+const createInitialLoans = () => [];
 
 const formatCostFrequency = (value) => {
   if (value === "yearly") {
@@ -243,8 +244,14 @@ const clampShare = (value) => {
   return value > 1 ? 1 : value;
 };
 
-const MAX_LOANS = 3;
+const MAX_LOANS = 5;
 const SavingsGrowthRate = 0.02;
+const BASE_TABS = [
+  { id: "overview", label: "Budgetöversikt", requiresResult: false, type: "system" },
+  { id: "results", label: "Resultat & scenarion", requiresResult: true, type: "system" },
+  { id: "forecast", label: "Prognos & diagram", requiresResult: true, type: "system" },
+  { id: "outcome", label: "Utfall", requiresResult: false, type: "system" },
+];
 
 const canCalculateLoans = (loans) => {
   if (!Array.isArray(loans)) {
@@ -282,11 +289,44 @@ function App() {
   const [electricity, setElectricity] = useState({
     consumption: "",
     price: "",
+    provider: "",
+    distributor: "",
+    tibberToken: "",
   });
   const [futureAmortizationPercent, setFutureAmortizationPercent] = useState("0");
   const [scenarioMode, setScenarioMode] = useState("current");
   const [taxAdjustmentEnabled, setTaxAdjustmentEnabled] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+  const [showPropertyForm, setShowPropertyForm] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [activeProfileId, setActiveProfileId] = useState("");
+  const [profiles, setProfiles] = useState([]);
+  const [authToken, setAuthToken] = useState("");
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [authError, setAuthError] = useState("");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [addressQuery, setAddressQuery] = useState("");
+  const [addressResults, setAddressResults] = useState([]);
+  const [addressLoading, setAddressLoading] = useState(false);
+  const [addressError, setAddressError] = useState("");
+  const [addressSessionToken, setAddressSessionToken] = useState(() =>
+    crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
+  );
+  const [propertyInsurance, setPropertyInsurance] = useState({
+    provider: "",
+    annualPremium: "",
+    deductible: "",
+    type: "hem",
+    notes: "",
+  });
+  const propertyInsuranceMonthly = useMemo(
+    () => (Number(propertyInsurance.annualPremium) > 0 ? Number(propertyInsurance.annualPremium) / 12 : 0),
+    [propertyInsurance.annualPremium],
+  );
   const [forecastYears, setForecastYears] = useState(10);
   const [savingsForecastYears, setSavingsForecastYears] = useState(5);
   const [rateScenarioDelta, setRateScenarioDelta] = useState(1);
@@ -296,8 +336,87 @@ function App() {
   const [feedback, setFeedback] = useState("");
   const [hasCalculated, setHasCalculated] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
+  const [customTabs, setCustomTabs] = useState([]);
+  const [newTabLabel, setNewTabLabel] = useState("");
+  const [adminKey, setAdminKey] = useState("");
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [adminError, setAdminError] = useState("");
+  const [adminLoading, setAdminLoading] = useState(false);
   const feedbackTimeout = useRef(null);
   const lastSubmittedSnapshot = useRef("");
+  const lastSavedProfileSnapshot = useRef("");
+  const autoSaveTimeout = useRef(null);
+  useEffect(() => {
+    const storedToken = localStorage.getItem(TOKEN_KEY);
+    if (storedToken) {
+      setAuthToken(storedToken);
+    }
+  }, []);
+  useEffect(() => {
+    if (!currentUser) {
+      resetForm();
+      setProfileName("Min profil");
+      setActiveProfileId("");
+      setShowOnboarding(false);
+    }
+  }, [currentUser]);
+  const [outcomeMonth, setOutcomeMonth] = useState(
+    new Date().toISOString().slice(0, 7),
+  );
+  const [outcomeEntries, setOutcomeEntries] = useState({});
+  const [outcomeExtras, setOutcomeExtras] = useState([]);
+  const [newOutcomeExtra, setNewOutcomeExtra] = useState({
+    label: "",
+    budget: "",
+    actual: "",
+    linkId: "",
+  });
+  useEffect(() => {
+    if (addressQuery.trim().length < 3 || !authToken) {
+      setAddressResults([]);
+      setAddressError("");
+      return;
+    }
+    const controller = new AbortController();
+    const fetchSuggestions = async () => {
+      try {
+        setAddressLoading(true);
+        setAddressError("");
+        const params = new URLSearchParams({
+          input: addressQuery,
+          sessiontoken: addressSessionToken,
+        });
+        const response = await authFetch(
+          authToken,
+          `${API_BASE_URL}/api/place-autocomplete?${params.toString()}`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) {
+          throw new Error("Kunde inte hämta adresser.");
+        }
+        const data = await response.json();
+        if (data?.predictions) {
+          setAddressResults(data.predictions);
+        } else {
+          setAddressResults([]);
+          setAddressError("Inga adresser hittades.");
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          console.error("Address lookup failed", err);
+          setAddressError("Kunde inte hämta adresser.");
+        }
+      } finally {
+        setAddressLoading(false);
+      }
+    };
+    const timeoutId = setTimeout(fetchSuggestions, 400);
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [addressQuery, addressSessionToken, authToken]);
 
   const propertyValueNumber = Number(propertyInfo.value);
   const hasPropertyValue = Number.isFinite(propertyValueNumber) && propertyValueNumber > 0;
@@ -566,8 +685,8 @@ function App() {
       (sum, item) => sum + effectiveMonthlyCost(item),
       0,
     );
-    return baseExtra + electricityTotals.monthlyCost;
-  }, [costItems, electricityTotals.monthlyCost]);
+    return baseExtra + electricityTotals.monthlyCost + propertyInsuranceMonthly;
+  }, [costItems, electricityTotals.monthlyCost, propertyInsuranceMonthly]);
   const sharedCostItems = useMemo(() => costItems.filter((item) => item.shareWithEx), [costItems]);
   const sharedMonthlyTotals = useMemo(
     () =>
@@ -907,6 +1026,16 @@ function App() {
         annual: electricityTotals.monthlyCost * 12,
       });
     }
+    if (propertyInsuranceMonthly > 0) {
+      rows.push({
+        label: propertyInsurance.provider
+          ? `Hemförsäkring – ${propertyInsurance.provider}`
+          : "Hemförsäkring",
+        amount: propertyInsuranceMonthly,
+        originalAmount: propertyInsuranceMonthly,
+        annual: propertyInsuranceMonthly * 12,
+      });
+    }
     savingsItems.forEach((item) => {
       const monthly = monthlyCostValue(item);
       rows.push({
@@ -929,6 +1058,8 @@ function App() {
     costItems,
     savingsItems,
     electricityTotals.monthlyCost,
+    propertyInsuranceMonthly,
+    propertyInsurance.provider,
     combinedMonthlyPlan,
   ]);
 
@@ -958,6 +1089,145 @@ function App() {
   }, [costSummaryRows, futureScenario]);
   const activeCostSummaryRows =
     isFutureView && futureScenario ? scenarioCostSummaryRows : costSummaryRows;
+
+  const tabs = useMemo(
+    () => [...BASE_TABS, ...customTabs],
+    [customTabs],
+  );
+
+  const topLinePlan = isFutureView && futureScenario ? futureScenario.futureCombinedPlan : combinedMonthlyPlan;
+  const topLineLoan =
+    isFutureView && futureScenario ? futureScenario.futureTotalMonthlyCost : loanMonthlyTotal;
+  const topLineLeftover =
+    isFutureView && futureScenario ? futureScenario.futureLeftover : remainingNetIncome;
+  const topLineShare =
+    isFutureView && futureScenario ? futureScenario.futureShare : totalIncomeShare;
+  const topLineLoanShare = isFutureView && futureScenario ? futureLoanShare : loanIncomeShare;
+  const currentOutcome = outcomeEntries[outcomeMonth] || {};
+  const budgetLoanRows = useMemo(() => {
+    if (result?.loans?.length) {
+      return result.loans.map((loan) => ({
+        id: loan.id,
+        name: loan.name,
+        budgetAmount: loan.totalMonthlyCost,
+      }));
+    }
+    return activeLoans.map((loan, index) => {
+      const monthlyInterest =
+        Number.isFinite(loan.amountNumber) && Number.isFinite(loan.interestNumber)
+          ? (loan.amountNumber * loan.interestNumber) / 100 / 12
+          : 0;
+      const monthlyAmort =
+        Number.isFinite(loan.amountNumber) && Number.isFinite(loan.amortizationNumber)
+          ? (loan.amountNumber * loan.amortizationNumber) / 100 / 12
+          : 0;
+      return {
+        id: loan.id,
+        name: loan.name || `Lån ${index + 1}`,
+        budgetAmount: monthlyInterest + monthlyAmort,
+      };
+    });
+  }, [result?.loans, activeLoans]);
+
+const budgetOutcomeRows = useMemo(() => {
+  const rows = [];
+  budgetLoanRows.forEach((loan) => {
+    rows.push({
+      id: `loan-${loan.id}`,
+        label: loan.name || "Lån",
+        budget: loan.budgetAmount,
+      });
+    });
+    costItems.forEach((item) => {
+      rows.push({
+        id: `cost-${item.id}`,
+        label: item.name || "Post",
+        budget: effectiveMonthlyCost(item),
+      });
+    });
+    if (electricityTotals.monthlyCost > 0) {
+      const providerLabel = electricity.provider?.trim() || "Elhandel";
+      const distributorLabel = electricity.distributor?.trim() || "El-nät";
+      rows.push({
+        id: "electricity-provider",
+        label: providerLabel,
+        budget: electricityTotals.monthlyCost,
+      });
+      rows.push({
+        id: "electricity-distributor",
+        label: distributorLabel,
+        budget: 0,
+      });
+    }
+    if (propertyInsuranceMonthly > 0) {
+      rows.push({
+        id: "property-insurance",
+        label: propertyInsurance.provider || "Hemförsäkring",
+        budget: propertyInsuranceMonthly,
+      });
+    }
+    savingsItems.forEach((item) => {
+      rows.push({
+        id: `saving-${item.id}`,
+        label: item.name || "Sparande",
+        budget: monthlyCostValue(item),
+      });
+    });
+    outcomeExtras.forEach((extra, index) => {
+      rows.push({
+        id: `extra-${index}`,
+        label: extra.label || "Manuell post",
+        budget: Number(extra.budget) || 0,
+      });
+    });
+    return rows;
+  }, [
+    budgetLoanRows,
+    costItems,
+    electricityTotals.monthlyCost,
+    savingsItems,
+    outcomeExtras,
+    propertyInsuranceMonthly,
+    propertyInsurance.provider,
+  ]);
+
+  const outcomeSummary = useMemo(() => {
+    let budgetTotal = 0;
+    let actualTotal = 0;
+    const rows = budgetOutcomeRows.map((row) => {
+      const actualRaw = currentOutcome[row.id];
+      const actual = Number(actualRaw) || 0;
+      budgetTotal += row.budget;
+      actualTotal += actual;
+      return {
+        ...row,
+        actual,
+        diff: actual - row.budget,
+      };
+    });
+    // Add manual extras directly to totals as they live outside budgetOutcomeRows
+    outcomeExtras.forEach((extra, idx) => {
+      const budgetSource =
+        extra.linkId && budgetOutcomeRows.find((row) => row.id === extra.linkId);
+      const budget = budgetSource ? budgetSource.budget : Number(extra.budget) || 0;
+      const actual = Number(extra.actual) || 0;
+      budgetTotal += budget;
+      actualTotal += actual;
+      rows.push({
+        id: `extra-${idx}`,
+        label: extra.label || budgetSource?.label || "Manuell post",
+        budget,
+        actual,
+        diff: actual - budget,
+      });
+    });
+    return {
+      rows,
+      budgetTotal,
+      actualTotal,
+      diffTotal: actualTotal - budgetTotal,
+    };
+  }, [budgetOutcomeRows, currentOutcome, outcomeExtras]);
 
   useEffect(() => {
     try {
@@ -1172,6 +1442,11 @@ function App() {
     setPropertyInfo((prev) => ({ ...prev, [name]: value }));
   };
 
+  const handlePropertyInsuranceChange = (event) => {
+    const { name, value } = event.target;
+    setPropertyInsurance((prev) => ({ ...prev, [name]: value }));
+  };
+
   const handleFutureAmortizationChange = (event) => {
     setFutureAmortizationPercent(event.target.value);
   };
@@ -1217,10 +1492,20 @@ function App() {
     setLoans((prev) => [...prev, createLoanRow(prev.length)]);
   };
 
-  const removeLoanRow = (loanId) => {
-    if (loans.length <= 1) {
+  const duplicateLoanRow = (loan) => {
+    if (loans.length >= MAX_LOANS) {
+      showFeedback(`Du kan som mest lägga in ${MAX_LOANS} lån.`);
       return;
     }
+    const clone = {
+      ...loan,
+      id: createLoanId(),
+      name: `${loan.name || "Lån"} (kopia)`,
+    };
+    setLoans((prev) => [...prev, clone]);
+  };
+
+  const removeLoanRow = (loanId) => {
     setLoans((prev) => prev.filter((loan) => loan.id !== loanId));
   };
 
@@ -1298,6 +1583,501 @@ function App() {
     window.print();
   };
 
+  const addCustomTab = () => {
+    const label = newTabLabel.trim();
+    if (!label) {
+      showFeedback("Döp fliken innan du lägger till den.");
+      return;
+    }
+    const id = `custom-${createCostId()}`;
+    setCustomTabs((prev) => [
+      ...prev,
+      { id, label, type: "custom", requiresResult: false, note: "" },
+    ]);
+    setActiveTab(id);
+    setNewTabLabel("");
+  };
+
+  const removeCustomTab = (tabId) => {
+    setCustomTabs((prev) => prev.filter((tab) => tab.id !== tabId));
+    if (activeTab === tabId) {
+      setActiveTab("overview");
+    }
+  };
+
+  const handleCustomTabNoteChange = (tabId, value) => {
+    setCustomTabs((prev) =>
+      prev.map((tab) => (tab.id === tabId ? { ...tab, note: value } : tab)),
+    );
+  };
+
+  const applyProfilePayload = (payload) => {
+    if (payload.incomePersons) {
+      setIncomePersons(normalizeIncomePersons(payload.incomePersons));
+    }
+    if (payload.costCategories && Array.isArray(payload.costCategories)) {
+      setCostCategories(payload.costCategories);
+    }
+    if (payload.propertyInfo) {
+      setPropertyInfo((prev) => ({ ...prev, ...payload.propertyInfo }));
+      if (payload.showPropertyForm !== undefined) {
+        setShowPropertyForm(Boolean(payload.showPropertyForm));
+      } else if (payload.propertyInfo.value || payload.propertyInfo.name) {
+        setShowPropertyForm(true);
+      }
+    }
+    if (payload.electricity) {
+      setElectricity((prev) => ({ ...prev, ...payload.electricity }));
+    }
+    if (payload.costItems) {
+      setCostItems(normalizeSavedCosts(payload.costItems));
+    }
+    if (payload.savingsItems) {
+      setSavingsItems(normalizeSavedCosts(payload.savingsItems));
+    }
+    if (payload.loans) {
+      const restored = normalizeSavedLoans(payload.loans);
+      setLoans(restored.length > 0 ? restored : createInitialLoans());
+    }
+    if (payload.electricity) {
+      setElectricity((prev) => ({ ...prev, ...payload.electricity }));
+    }
+    if (payload.futureAmortizationPercent !== undefined) {
+      setFutureAmortizationPercent(String(payload.futureAmortizationPercent));
+    }
+    if (typeof payload.taxAdjustmentEnabled === "boolean") {
+      setTaxAdjustmentEnabled(payload.taxAdjustmentEnabled);
+    }
+    if (typeof payload.savingsForecastYears === "number") {
+      setSavingsForecastYears(payload.savingsForecastYears);
+    }
+    if (payload.outcomeMonth) {
+      setOutcomeMonth(payload.outcomeMonth);
+    }
+    if (payload.outcomeEntries) {
+      setOutcomeEntries(payload.outcomeEntries);
+    }
+    if (payload.outcomeExtras) {
+      setOutcomeExtras(payload.outcomeExtras);
+    }
+    if (payload.newOutcomeExtra) {
+      setNewOutcomeExtra(payload.newOutcomeExtra);
+    }
+    if (payload.propertyInsurance) {
+      setPropertyInsurance((prev) => ({ ...prev, ...payload.propertyInsurance }));
+    }
+    const snapshot = JSON.stringify(payload);
+    lastSavedProfileSnapshot.current = snapshot;
+  };
+
+  const buildProfilePayload = () => ({
+    incomePersons,
+    loans,
+    costItems,
+    savingsItems,
+    electricity,
+    propertyInfo,
+    propertyInsurance,
+    costCategories,
+    futureAmortizationPercent,
+    taxAdjustmentEnabled,
+    savingsForecastYears,
+    outcomeMonth,
+  outcomeEntries,
+  outcomeExtras,
+  showPropertyForm,
+});
+
+const authFetch = (token, url, options = {}) => {
+  const headers = options.headers ? { ...options.headers } : {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return fetch(url, { ...options, headers });
+};
+
+const adminFetch = (token, adminKey, url, options = {}) => {
+  const headers = options.headers ? { ...options.headers } : {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  if (adminKey) {
+    headers["x-admin-key"] = adminKey;
+  }
+  return fetch(url, { ...options, headers });
+};
+
+const refreshProfiles = useCallback(async () => {
+  if (!authToken) {
+    setProfiles([]);
+    return;
+  }
+  try {
+    const response = await authFetch(authToken, `${API_BASE_URL}/api/profiles`);
+    if (!response.ok) {
+      throw new Error("Kunde inte hämta profiler.");
+    }
+    const rows = await response.json();
+    setProfiles(Array.isArray(rows) ? rows : []);
+    if (!activeProfileId && Array.isArray(rows) && rows.length > 0) {
+      setActiveProfileId(rows[0].id);
+      await handleLoadProfile(rows[0].id);
+    }
+  } catch (err) {
+    console.error("Failed to fetch profiles", err);
+    showFeedback("Kunde inte hämta profiler.");
+  }
+}, [authToken, activeProfileId]);
+
+  useEffect(() => {
+    refreshProfiles();
+  }, [refreshProfiles]);
+
+  useEffect(() => {
+    const loadMe = async () => {
+      if (!authToken) {
+        setCurrentUser(null);
+        return;
+      }
+      try {
+        const response = await authFetch(authToken, `${API_BASE_URL}/api/me`);
+        if (!response.ok) {
+          throw new Error("Auth misslyckades");
+        }
+        const user = await response.json();
+        setCurrentUser(user);
+        localStorage.setItem(TOKEN_KEY, authToken);
+        setShowOnboarding(!user.onboardingDone);
+      } catch (err) {
+        console.error("Failed to load user", err);
+        setCurrentUser(null);
+        setAuthToken("");
+        localStorage.removeItem(TOKEN_KEY);
+      }
+    };
+    loadMe();
+  }, [authToken]);
+
+  const handleLoadProfile = async (id) => {
+    if (!id) {
+      showFeedback("Välj en profil att ladda.");
+      return;
+    }
+    if (!authToken) {
+      showFeedback("Logga in för att ladda profiler.");
+      return;
+    }
+    try {
+      const response = await authFetch(authToken, `${API_BASE_URL}/api/profiles/${id}`);
+      if (!response.ok) {
+        throw new Error("Kunde inte läsa profilen.");
+      }
+      const profile = await response.json();
+      if (profile?.payload) {
+        applyProfilePayload(profile.payload);
+        setActiveProfileId(id);
+        setProfileName(profile.name || "");
+        lastSavedProfileSnapshot.current = JSON.stringify(profile.payload);
+        showFeedback(`Profilen "${profile.name}" laddad ✅`);
+      }
+    } catch (err) {
+      console.error("Failed to load profile", err);
+      showFeedback("Kunde inte läsa profilen.");
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    const name = profileName.trim();
+    if (!name) {
+      showFeedback("Ange ett namn på profilen.");
+      return;
+    }
+    if (!authToken) {
+      showFeedback("Logga in för att spara profil.");
+      return;
+    }
+    const payload = buildProfilePayload();
+    try {
+      const method = activeProfileId ? "PUT" : "POST";
+      const url = activeProfileId
+        ? `${API_BASE_URL}/api/profiles/${activeProfileId}`
+        : `${API_BASE_URL}/api/profiles`;
+      const response = await authFetch(authToken, url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, payload }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte spara profilen.");
+      }
+      const saved = await response.json();
+      setActiveProfileId(saved.id);
+      showFeedback("Profil sparad ✅");
+      refreshProfiles();
+    } catch (err) {
+      console.error("Failed to save profile", err);
+      showFeedback(err.message || "Kunde inte spara profilen.");
+    }
+  };
+
+  useEffect(() => {
+    const name = profileName.trim();
+    if (!name) {
+      return undefined;
+    }
+    if (!authToken) {
+      return undefined;
+    }
+    const payload = buildProfilePayload();
+    const snapshot = JSON.stringify(payload);
+    if (snapshot === lastSavedProfileSnapshot.current) {
+      return undefined;
+    }
+    if (!authToken) {
+      return undefined;
+    }
+    if (autoSaveTimeout.current) {
+      clearTimeout(autoSaveTimeout.current);
+    }
+    autoSaveTimeout.current = setTimeout(async () => {
+      try {
+        const method = activeProfileId ? "PUT" : "POST";
+        const url = activeProfileId
+          ? `${API_BASE_URL}/api/profiles/${activeProfileId}`
+          : `${API_BASE_URL}/api/profiles`;
+        const response = await fetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, payload }),
+        });
+        if (!response.ok) {
+          throw new Error("Kunde inte autospara profilen.");
+        }
+        const saved = await response.json();
+        lastSavedProfileSnapshot.current = snapshot;
+        if (!activeProfileId) {
+          setActiveProfileId(saved.id);
+        }
+        refreshProfiles();
+        showFeedback("Profil autosparad ✅");
+      } catch (err) {
+        console.error("Auto-save failed", err);
+        showFeedback("Kunde inte autospara profilen.");
+      }
+    }, 900);
+    return () => {
+      if (autoSaveTimeout.current) {
+        clearTimeout(autoSaveTimeout.current);
+      }
+    };
+  }, [
+    profileName,
+    incomePersons,
+    loans,
+    costItems,
+    savingsItems,
+    electricity,
+    propertyInfo,
+    costCategories,
+    futureAmortizationPercent,
+    taxAdjustmentEnabled,
+    savingsForecastYears,
+    outcomeMonth,
+    outcomeEntries,
+    outcomeExtras,
+    authToken,
+    activeProfileId,
+    showPropertyForm,
+    refreshProfiles,
+  ]);
+
+  const handleDeleteProfile = async () => {
+    if (!activeProfileId) {
+      showFeedback("Ingen aktiv profil att ta bort.");
+      return;
+    }
+    if (!authToken) {
+      showFeedback("Logga in för att ta bort profil.");
+      return;
+    }
+    try {
+      const response = await authFetch(authToken, `${API_BASE_URL}/api/profiles/${activeProfileId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        throw new Error("Kunde inte ta bort profilen.");
+      }
+      setActiveProfileId("");
+      setProfileName("");
+      refreshProfiles();
+      showFeedback("Profil borttagen.");
+    } catch (err) {
+      console.error("Failed to delete profile", err);
+      showFeedback("Kunde inte ta bort profilen.");
+    }
+  };
+
+  const handleOutcomeChange = (key, value) => {
+    setOutcomeEntries((prev) => ({
+      ...prev,
+      [outcomeMonth]: {
+        ...(prev[outcomeMonth] || {}),
+        [key]: value,
+      },
+    }));
+  };
+
+  const handleOutcomeExtraChange = (index, field, value) => {
+    setOutcomeExtras((prev) =>
+      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item)),
+    );
+  };
+
+  const loadAdminUsers = async () => {
+    if (!adminUnlocked || !adminKey) {
+      return;
+    }
+    try {
+      setAdminLoading(true);
+      setAdminError("");
+      const response = await adminFetch(
+        authToken,
+        adminKey,
+        `${API_BASE_URL}/api/admin/users`,
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte hämta användare.");
+      }
+      const rows = await response.json();
+      setAdminUsers(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      console.error("Admin load users failed", err);
+      setAdminError(err.message || "Kunde inte hämta användare.");
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleAdminUnlock = async () => {
+    setAdminError("");
+    if (!adminKey) {
+      setAdminError("Ange admin-nyckel.");
+      return;
+    }
+    setAdminUnlocked(true);
+    loadAdminUsers();
+  };
+
+  const handleAdminDeleteUser = async (userId) => {
+    try {
+      const response = await adminFetch(
+        authToken,
+        adminKey,
+        `${API_BASE_URL}/api/admin/users/${userId}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte ta bort användaren.");
+      }
+      showFeedback("Användare borttagen ✅");
+      loadAdminUsers();
+    } catch (err) {
+      console.error("Admin delete user failed", err);
+      setAdminError(err.message || "Kunde inte ta bort användaren.");
+    }
+  };
+
+  const handleAdminResetOnboarding = async (userId) => {
+    try {
+      const response = await adminFetch(
+        authToken,
+        adminKey,
+        `${API_BASE_URL}/api/admin/users/${userId}/reset-onboarding`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte återställa onboarding.");
+      }
+      showFeedback("Onboarding återställd ✅");
+      loadAdminUsers();
+    } catch (err) {
+      console.error("Admin reset onboarding failed", err);
+      setAdminError(err.message || "Kunde inte återställa onboarding.");
+    }
+  };
+
+  const addOutcomeExtra = () => {
+    if (!newOutcomeExtra.label.trim()) {
+      showFeedback("Ange ett namn för den manuella posten.");
+      return;
+    }
+    const linked = budgetOutcomeRows.find((row) => row.id === newOutcomeExtra.linkId);
+    const linkedBudget = linked ? linked.budget : Number(newOutcomeExtra.budget) || 0;
+    setOutcomeExtras((prev) => [
+      ...prev,
+      {
+        label: newOutcomeExtra.label.trim(),
+        budget: linkedBudget,
+        actual: Number(newOutcomeExtra.actual) || 0,
+        linkId: newOutcomeExtra.linkId || "",
+      },
+    ]);
+    setNewOutcomeExtra({ label: "", budget: "", actual: "", linkId: "" });
+  };
+
+  const removeOutcomeExtra = (index) => {
+    setOutcomeExtras((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleAuthSubmit = async () => {
+    setAuthError("");
+    const endpoint = authMode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+    try {
+      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: authUsername, password: authPassword }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte logga in/registrera.");
+      }
+      const data = await response.json();
+      setAuthToken(data.token);
+      localStorage.setItem(TOKEN_KEY, data.token);
+      setAuthPassword("");
+      showFeedback("Inloggad ✅");
+      setShowOnboarding(true);
+    } catch (err) {
+      console.error("Auth failed", err);
+      setAuthError(err.message || "Kunde inte logga in/registrera.");
+    }
+  };
+
+  const handleLogout = () => {
+    setAuthToken("");
+    setCurrentUser(null);
+    localStorage.removeItem(TOKEN_KEY);
+    setProfiles([]);
+    setActiveProfileId("");
+    setAdminUnlocked(false);
+    setAdminUsers([]);
+    setAdminKey("");
+  };
+
+  const handleSelectAddress = (prediction) => {
+    setPropertyInfo((prev) => ({ ...prev, name: prediction.description || "" }));
+    setAddressQuery(prediction.description || "");
+    setAddressResults([]);
+    setAddressSessionToken(
+      crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
+    );
+  };
+
   useEffect(() => {
     if (!initialLoadDone) {
       return;
@@ -1313,6 +2093,7 @@ function App() {
         futureAmortizationPercent,
         taxAdjustmentEnabled,
         savingsForecastYears,
+        showPropertyForm,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (err) {
@@ -1328,6 +2109,7 @@ function App() {
     futureAmortizationPercent,
     taxAdjustmentEnabled,
     savingsForecastYears,
+    showPropertyForm,
     initialLoadDone,
   ]);
 
@@ -1548,14 +2330,334 @@ function App() {
             månadskostnaden jämfört med din nettolön per månad.
           </p>
         </div>
-        {netMonthlyIncome && (
-          <div className="highlight">
-            <p>Månadsinkomst (netto)</p>
-            <strong>{SEK.format(netMonthlyIncome)}</strong>
-          </div>
-        )}
+        <div className="user-chip">
+          {currentUser ? (
+            <>
+              <span>Inloggad som {currentUser.username}</span>
+              <button type="button" className="link-button" onClick={handleLogout}>
+                Logga ut
+              </button>
+            </>
+          ) : (
+            <span>Inte inloggad</span>
+          )}
+        </div>
       </header>
       <main className="content">
+        {!currentUser ? (
+          <div className="auth-panel">
+            <div>
+              <p className="eyebrow subtle">Logga in eller skapa konto</p>
+              <h2>Kom igång</h2>
+            </div>
+            <div className="auth-fields">
+              <input
+                type="text"
+                placeholder="Användarnamn"
+                value={authUsername}
+                onChange={(event) => setAuthUsername(event.target.value)}
+              />
+              <input
+                type="password"
+                placeholder="Lösenord"
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+              />
+              <div className="auth-actions">
+                <button type="button" onClick={handleAuthSubmit}>
+                  {authMode === "signup" ? "Registrera" : "Logga in"}
+                </button>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => setAuthMode((prev) => (prev === "signup" ? "login" : "signup"))}
+                >
+                  {authMode === "signup" ? "Har konto? Logga in" : "Skapa konto"}
+                </button>
+              </div>
+              {authError && <p className="error">{authError}</p>}
+            </div>
+          </div>
+        ) : showOnboarding ? (
+          <>
+            <div className="auth-status">
+              <span>Inloggad som {currentUser.username}</span>
+              <button type="button" className="link-button" onClick={handleLogout}>
+                Logga ut
+              </button>
+            </div>
+            <div className="onboarding-card">
+              <p className="eyebrow subtle">Onboarding</p>
+              <h3>Steg {onboardingStep + 1} av 2</h3>
+              <p className="onboarding-lead">
+                Vi behöver din inkomst och bostadsinfo för att räkna rätt skattesats, amorteringskrav och belåningsgrad.
+              </p>
+              {onboardingStep === 0 && (
+                <div className="onboarding-step">
+                  <p>Lägg till din inkomst och skattetabell.</p>
+                  <label>
+                    <span>Namn</span>
+                    <input
+                      type="text"
+                      value={incomePersons[0]?.name || ""}
+                      onChange={(event) =>
+                        handleIncomePersonChange(incomePersons[0].id, "name", event.target.value)
+                      }
+                      placeholder="t.ex. Anna"
+                    />
+                  </label>
+                  <label>
+                    <span>Brutto (kr/mån)</span>
+                    <input
+                      type="number"
+                      placeholder="t.ex. 42000"
+                      value={incomePersons[0]?.incomeGross || ""}
+                      onChange={(event) =>
+                        handleIncomePersonChange(incomePersons[0].id, "incomeGross", event.target.value)
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Skattetabell</span>
+                    <select
+                      value={incomePersons[0]?.taxTable || "30"}
+                      onChange={(event) =>
+                        handleIncomePersonChange(incomePersons[0].id, "taxTable", event.target.value)
+                      }
+                    >
+                      {TAX_TABLES.map((table) => (
+                        <option key={`ob-${table.id}`} value={table.id}>
+                          {table.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+              {onboardingStep === 1 && (
+                <div className="onboarding-step">
+                  <p>Sök adress (Google Maps) och lägg till värdering (frivilligt).</p>
+                  <p className="onboarding-note">
+                    Adressen hjälper oss knyta värdet till bostaden och visa belåningsgrad. Värdet kan ändras senare.
+                  </p>
+                  <label>
+                    <span>Adress</span>
+                    <input
+                      type="text"
+                      value={addressQuery}
+                      onChange={(event) => setAddressQuery(event.target.value)}
+                      placeholder="t.ex. Storgatan 1, Stockholm"
+                    />
+                  </label>
+                  {addressError && <p className="error">{addressError}</p>}
+                  <ul className="address-results">
+                    {addressLoading && <li>Hämtar adresser...</li>}
+                    {!addressLoading &&
+                      addressResults.map((prediction) => (
+                        <li key={prediction.place_id}>
+                          <button type="button" onClick={() => handleSelectAddress(prediction)}>
+                            {prediction.description}
+                          </button>
+                        </li>
+                      ))}
+                  </ul>
+                  <label>
+                    <span>Värdering (kr)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      name="value"
+                      value={propertyInfo.value}
+                      onChange={(event) => {
+                        setShowPropertyForm(true);
+                        handlePropertyInfoChange(event);
+                      }}
+                      placeholder="t.ex. 5 000 000"
+                    />
+                  </label>
+                </div>
+              )}
+              <div className="onboarding-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    const finish = async () => {
+                      try {
+                        await authFetch(authToken, `${API_BASE_URL}/api/users/onboarding/done`, {
+                          method: "POST",
+                        });
+                      } catch (err) {
+                        console.error("Failed to mark onboarding done", err);
+                      }
+                      setShowOnboarding(false);
+                      setOnboardingStep(0);
+                    };
+                    if (onboardingStep >= 1) {
+                      finish();
+                    } else {
+                      setOnboardingStep((prev) => prev + 1);
+                    }
+                  }}
+                >
+                  {onboardingStep >= 1 ? "Klart" : "Nästa"}
+                </button>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    const finish = async () => {
+                      try {
+                        await authFetch(authToken, `${API_BASE_URL}/api/users/onboarding/done`, {
+                          method: "POST",
+                        });
+                      } catch (err) {
+                        console.error("Failed to mark onboarding done", err);
+                      }
+                      setShowOnboarding(false);
+                      setOnboardingStep(0);
+                    };
+                    finish();
+                  }}
+                >
+                  Hoppa över
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="admin-panel">
+              <div className="admin-header">
+                <div>
+                  <p className="eyebrow subtle">Admin</p>
+                  <h4>Hantera användare</h4>
+                </div>
+                <div className="admin-actions">
+                  <input
+                    type="password"
+                    placeholder="Admin-nyckel"
+                    value={adminKey}
+                    onChange={(event) => setAdminKey(event.target.value)}
+                  />
+                  <button type="button" className="ghost" onClick={handleAdminUnlock}>
+                    Lås upp
+                  </button>
+                  <button type="button" className="ghost" onClick={loadAdminUsers} disabled={!adminUnlocked}>
+                    Uppdatera
+                  </button>
+                </div>
+              </div>
+              {adminError && <p className="error">{adminError}</p>}
+              {adminUnlocked && (
+                <div className="admin-users">
+                  {adminLoading ? (
+                    <p>Hämtar användare...</p>
+                  ) : adminUsers.length === 0 ? (
+                    <p className="placeholder">Inga användare hittades.</p>
+                  ) : (
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th>Användare</th>
+                          <th>Skapad</th>
+                          <th>Onboarding</th>
+                          <th>Åtgärder</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminUsers.map((user) => (
+                          <tr key={user.id}>
+                            <td>{user.username}</td>
+                            <td>{user.createdAt?.slice(0, 10)}</td>
+                            <td>{user.onboardingDone ? "Klar" : "Ej klar"}</td>
+                            <td className="admin-actions-cell">
+                              <button
+                                type="button"
+                                className="ghost"
+                                onClick={() => handleAdminResetOnboarding(user.id)}
+                              >
+                                Återställ onboarding
+                              </button>
+                              <button
+                                type="button"
+                                className="link-button"
+                                onClick={() => handleAdminDeleteUser(user.id)}
+                              >
+                                Ta bort
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+        <div className="top-tabs">
+          <div className="tab-buttons">
+            {tabs.map((tab) => {
+              const disabled = tab.requiresResult && !result?.totals;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={activeTab === tab.id ? "active" : ""}
+                  disabled={disabled}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <span>{tab.label}</span>
+                  {tab.type === "custom" && (
+                    <span
+                      className="custom-tab-remove"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeCustomTab(tab.id);
+                      }}
+                    >
+                      ×
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="new-tab-inline">
+            <input
+              type="text"
+              placeholder="Ny flik"
+              value={newTabLabel}
+              onChange={(event) => setNewTabLabel(event.target.value)}
+            />
+            <button type="button" className="ghost" onClick={addCustomTab}>
+              + Lägg till flik
+            </button>
+          </div>
+        </div>
+
+        {activeTab === "overview" && (
+          <div className="page-block">
+            {result?.totals && (
+              <div className="summary-rail">
+                <div className="kpi-card accent">
+                  <p>Att lägga undan</p>
+                  <strong>{SEK.format(topLinePlan)}</strong>
+                  <span>{PERCENT.format(topLineShare ?? 0)} av nettolönen</span>
+                </div>
+                <div className="kpi-card">
+                  <p>Bolån / mån</p>
+                  <strong>{SEK.format(topLineLoan)}</strong>
+                  <span>{PERCENT.format(topLineLoanShare ?? 0)} av nettolönen</span>
+                </div>
+                <div className={`kpi-card ${topLineLeftover < 0 ? "negative" : ""}`}>
+                  <p>Kvar av nettolön</p>
+                  <strong>{SEK.format(topLineLeftover ?? 0)}</strong>
+                  <span>{topLineLeftover < 0 ? "Saknas för planen" : "Efter alla kostnader"}</span>
+                </div>
+              </div>
+            )}
+
         <form className="calculator-form" onSubmit={(event) => event.preventDefault()}>
           <section className="form-section">
             <div className="section-header">
@@ -1682,50 +2784,178 @@ function App() {
                 <h2>Fastighetsinformation</h2>
                 <p>Ange bostadens värde för att se belåningsgrad och låneutrymme.</p>
               </div>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setShowPropertyForm((prev) => !prev)}
+              >
+                {showPropertyForm ? "Dölj fastighet" : "Lägg till fastighet"}
+              </button>
             </div>
-            <div className="property-grid">
-              <label>
-                <span>Beskrivning / adress</span>
-                <input
-                  type="text"
-                  name="name"
-                  value={propertyInfo.name}
-                  onChange={handlePropertyInfoChange}
-                  placeholder="t.ex. Villa Solrosen"
-                />
-              </label>
-              <label>
-                <span>Värdering (kr)</span>
-                <input
-                  type="number"
-                  min="0"
-                  name="value"
-                  value={propertyInfo.value}
-                  onChange={handlePropertyInfoChange}
-                  placeholder="t.ex. 5 000 000"
-                />
-                {propertyValuePreview && (
-                  <span className="input-preview">{propertyValuePreview}</span>
+              {showPropertyForm ? (
+                <>
+                  <div className="property-grid">
+                    <label>
+                      <span>Beskrivning / adress</span>
+                    <input
+                      type="text"
+                      name="name"
+                      value={propertyInfo.name}
+                      onChange={handlePropertyInfoChange}
+                      placeholder="t.ex. Villa Solrosen"
+                    />
+                  </label>
+                  <label>
+                    <span>Värdering (kr)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      name="value"
+                      value={propertyInfo.value}
+                      onChange={handlePropertyInfoChange}
+                      placeholder="t.ex. 5 000 000"
+                    />
+                    {propertyValuePreview && (
+                      <span className="input-preview">{propertyValuePreview}</span>
+                    )}
+                  </label>
+                  </div>
+                <div className="electricity-card property-electricity">
+                  <div>
+                    <h4>Elförbrukning (kopplad till fastigheten)</h4>
+                    <p>Ange årsförbrukning, snittpris eller hämta från Tibber.</p>
+                  </div>
+                  <div className="electricity-inputs">
+                    <label>
+                      <span>Årsförbrukning (kWh / år)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        name="consumption"
+                        value={electricity.consumption}
+                        onChange={handleElectricityChange}
+                        placeholder="t.ex. 250"
+                      />
+                    </label>
+                    <label>
+                      <span>Snittpris (kr / kWh)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        name="price"
+                        value={electricity.price}
+                        onChange={handleElectricityChange}
+                        placeholder="t.ex. 1.5"
+                      />
+                    </label>
+                    <label>
+                      <span>Elhandelsbolag</span>
+                      <input
+                        type="text"
+                        name="provider"
+                        value={electricity.provider}
+                        onChange={handleElectricityChange}
+                        placeholder="t.ex. Tibber"
+                      />
+                    </label>
+                    <label>
+                      <span>El-nätsleverantör</span>
+                      <input
+                        type="text"
+                        name="distributor"
+                        value={electricity.distributor}
+                        onChange={handleElectricityChange}
+                        placeholder="t.ex. Vattenfall"
+                      />
+                    </label>
+                    <label>
+                      <span>Tibber API-nyckel (valfritt)</span>
+                      <input
+                        type="password"
+                        name="tibberToken"
+                        value={electricity.tibberToken}
+                        onChange={handleElectricityChange}
+                        placeholder="Klistra in din Tibber-token"
+                      />
+                    </label>
+                    <div className="electricity-summary">
+                      <span>Uträknad elkostnad</span>
+                      <strong>{SEK.format(electricityTotals.monthlyCost)} / mån</strong>
+                      <span>
+                        ≈ {NUMBER.format(electricityTotals.monthlyKwh || 0)} kWh per månad
+                      </span>
+                    </div>
+                  </div>
+                  <div className="electricity-actions">
+                    <button type="button" className="ghost" onClick={handleTibberSync} disabled={!electricity.tibberToken}>
+                      Hämta från Tibber
+                    </button>
+                  </div>
+                </div>
+                  {hasPropertyValue && activeLoanPrincipal > 0 && (
+                    <div className="property-summary">
+                      <div>
+                        <p>Belåningsgrad</p>
+                      <h3>{PERCENT.format(currentLoanToValue ?? 0)}</h3>
+                      <span>
+                        Totala lån {SEK.format(activeLoanPrincipal)} av {SEK.format(propertyValueNumber)} i värde.
+                      </span>
+                      {amortizationRequirement && (
+                        <span>
+                          Amorteringskrav enligt regel: <strong>{amortizationRequirement.percent}%</strong> / år
+                        </span>
+                      )}
+                    </div>
+                    <div className="progress muted">
+                      <div style={{ width: `${ltvProgress}%` }} />
+                    </div>
+                  </div>
                 )}
-              </label>
-            </div>
-            {hasPropertyValue && activeLoanPrincipal > 0 && (
-              <div className="property-summary">
-                <div>
-                  <p>Belåningsgrad</p>
-                  <h3>{PERCENT.format(currentLoanToValue ?? 0)}</h3>
-                  <span>
-                    Totala lån {SEK.format(activeLoanPrincipal)} av {SEK.format(propertyValueNumber)} i värde.
-                  </span>
-                  {amortizationRequirement && (
-                    <span>
-                      Amorteringskrav enligt regel: <strong>{amortizationRequirement.percent}%</strong> / år
-                    </span>
-                  )}
+              </>
+            ) : (
+              <p className="placeholder">Lägg till fastighet om du vill visa belåningsgrad.</p>
+            )}
+            {showPropertyForm && (
+              <div className="insurance-block">
+                <h4>Hemförsäkring kopplad till bostaden</h4>
+                <div className="insurance-grid">
+                  <label>
+                    <span>Bolag</span>
+                    <input
+                      type="text"
+                      name="provider"
+                      value={propertyInsurance.provider}
+                      onChange={handlePropertyInsuranceChange}
+                      placeholder="t.ex. If"
+                    />
+                  </label>
+                  <label>
+                    <span>Premie (kr/år)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      name="annualPremium"
+                      value={propertyInsurance.annualPremium}
+                      onChange={handlePropertyInsuranceChange}
+                      placeholder="t.ex. 4800"
+                    />
+                  </label>
+                  <label>
+                    <span>Självrisk (kr)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      name="deductible"
+                      value={propertyInsurance.deductible}
+                      onChange={handlePropertyInsuranceChange}
+                      placeholder="t.ex. 1500"
+                    />
+                  </label>
                 </div>
-                <div className="progress muted">
-                  <div style={{ width: `${ltvProgress}%` }} />
-                </div>
+                <p className="metric-note">
+                  Vi sparar försäkringen kopplad till denna fastighet och kan senare jämföra mot genomsnitt.
+                </p>
               </div>
             )}
           </section>
@@ -1737,6 +2967,9 @@ function App() {
               </div>
             </div>
             <div className="loan-grid">
+              {loans.length === 0 && (
+                <p className="placeholder">Lägg till ditt första lån för att komma igång.</p>
+              )}
               {loans.map((loan, index) => {
                 const amountPreview = formatAmountPreview(loan.amount);
                 return (
@@ -1818,6 +3051,23 @@ function App() {
                         </label>
                       )}
                     </div>
+                    <div className="loan-card-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => duplicateLoanRow(loan)}
+                        disabled={loans.length >= MAX_LOANS}
+                      >
+                        Kopiera
+                      </button>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => removeLoanRow(loan.id)}
+                      >
+                        Ta bort
+                      </button>
+                    </div>
                   </article>
                 );
               })}
@@ -1887,69 +3137,31 @@ function App() {
                 (dock aldrig under 1%).
               </span>
             </div>
+            <div className="tax-adjustment-card">
+              <label className="tax-toggle">
+                <input
+                  type="checkbox"
+                  checked={taxAdjustmentEnabled}
+                  onChange={toggleTaxAdjustment}
+                />
+                Skattejämkning på ränteavdrag
+              </label>
+              <p>
+                Ger ca <strong>{SEK.format(interestDeductionMonthly)}</strong> extra netto /
+                månad.
+              </p>
+              {!result && (
+                <span className="field-note">
+                  Beloppet räknas ut när du gjort din första kalkyl.
+                </span>
+              )}
+            </div>
           </section>
-          <div className="tax-adjustment-card">
-            <label className="tax-toggle">
-              <input
-                type="checkbox"
-                checked={taxAdjustmentEnabled}
-                onChange={toggleTaxAdjustment}
-              />
-              Skattejämkning på ränteavdrag
-            </label>
-            <p>
-              Ger ca <strong>{SEK.format(interestDeductionMonthly)}</strong> extra netto /
-              månad.
-            </p>
-            {!result && (
-              <span className="field-note">
-                Beloppet räknas ut när du gjort din första kalkyl.
-              </span>
-            )}
-          </div>
           <section className="extra-costs">
             <div className="extra-header">
               <div>
                 <h3>Övriga kostnader</h3>
                 <p>Lägg till återkommande utgifter som bredband, försäkringar m.m.</p>
-              </div>
-            </div>
-            <div className="electricity-card">
-              <div>
-                <h4>Elförbrukning</h4>
-                <p>Ange total årsförbrukning (kWh/år) och snittpris. Vi räknar om till månadsnivå.</p>
-              </div>
-              <div className="electricity-inputs">
-                <label>
-                  <span>Årsförbrukning (kWh / år)</span>
-                  <input
-                    type="number"
-                    min="0"
-                    name="consumption"
-                    value={electricity.consumption}
-                    onChange={handleElectricityChange}
-                    placeholder="t.ex. 250"
-                  />
-                </label>
-                <label>
-                  <span>Snittpris (kr / kWh)</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    name="price"
-                    value={electricity.price}
-                    onChange={handleElectricityChange}
-                    placeholder="t.ex. 1.5"
-                  />
-                </label>
-                <div className="electricity-summary">
-                  <span>Uträknad elkostnad</span>
-                  <strong>{SEK.format(electricityTotals.monthlyCost)} / mån</strong>
-                  <span>
-                    ≈ {NUMBER.format(electricityTotals.monthlyKwh || 0)} kWh per månad
-                  </span>
-                </div>
               </div>
             </div>
             <div className="cost-inputs">
@@ -2284,7 +3496,7 @@ function App() {
                 ))}
               </ul>
             ) : (
-              <p className="cost-hint">Planera sparande för att se prognosen längre ned.</p>
+            <p className="cost-hint">Planera sparande för att se prognosen längre ned.</p>
             )}
           </section>
           <div className="actions">
@@ -2308,164 +3520,15 @@ function App() {
             >
               Rensa sparade
             </button>
-        </div>
-        {feedback && <p className="save-feedback">{feedback}</p>}
-        {error && <p className="error">{error}</p>}
-      </form>
-      <div className="tab-nav">
-        <button
-          type="button"
-          className={activeTab === "overview" ? "active" : ""}
-          onClick={() => setActiveTab("overview")}
-        >
-          Budgetöversikt
-        </button>
-        <button
-          type="button"
-          className={activeTab === "results" ? "active" : ""}
-          onClick={() => setActiveTab("results")}
-          disabled={!result?.totals}
-        >
-          Resultat & scenarion
-        </button>
-        <button
-          type="button"
-          className={activeTab === "forecast" ? "active" : ""}
-          onClick={() => setActiveTab("forecast")}
-          disabled={!result?.totals}
-        >
-          Prognos & diagram
-        </button>
-      </div>
-      <div className={`tab-panel overview-panel ${activeTab === "overview" ? "active" : ""}`}>
-        {result?.totals ? (
-          <section className="summary-grid-container">
-            <div className="results-header">
-              <div>
-                <h2>Budgetöversikt</h2>
-                <p>
-                  Totala månadsutgifter och hur de förhåller sig till din nettolön.
-                </p>
-              </div>
-              <span className="results-status">
-                Uppdaterad kalkyl · {new Date().toLocaleTimeString("sv-SE")}
-              </span>
-            </div>
-            <div className="summary-grid">
-              <article className="summary-card primary">
-                <p>Totalt att lägga undan / mån</p>
-                <h3>{SEK.format(combinedMonthlyPlan)}</h3>
-                <span>{PERCENT.format(totalIncomeShare ?? 0)} av nettolönen</span>
-                <div className="progress">
-                  <div style={{ width: `${planProgress}%` }} />
-                </div>
-              </article>
-              <article className="summary-card">
-                <p>Bolån / mån</p>
-                <h3>{SEK.format(loanMonthlyTotal)}</h3>
-                <span>{PERCENT.format(loanIncomeShare ?? 0)} av nettolönen</span>
-                <div className="progress muted">
-                  <div style={{ width: `${loanProgress}%` }} />
-                </div>
-              </article>
-              <article className="summary-card">
-                <p>Övriga kostnader / mån</p>
-                <h3>{SEK.format(extraMonthlyTotal)}</h3>
-                <span>{PERCENT.format(extraIncomeShare ?? 0)} av nettolönen</span>
-                <div className="progress muted">
-                  <div style={{ width: `${extraProgress}%` }} />
-                </div>
-              </article>
-              <article className="summary-card">
-                <p>Sparande / mån</p>
-                <h3>{SEK.format(savingsMonthlyTotal)}</h3>
-                <span>{PERCENT.format(savingsIncomeShare ?? 0)} av nettolönen</span>
-                <div className="progress muted">
-                  <div style={{ width: `${savingsProgress}%` }} />
-                </div>
-              </article>
-              {hasPropertyValue && activeLoanPrincipal > 0 && (
-                <article className="summary-card">
-                  <p>Belåningsgrad</p>
-                  <h3>{PERCENT.format(currentLoanToValue ?? 0)}</h3>
-                  <span>Totala lån {SEK.format(activeLoanPrincipal)}</span>
-                  {amortizationRequirement && (
-                    <span>
-                      Amorteringskrav: {amortizationRequirement.percent}% / år
-                    </span>
-                  )}
-                  <div className="progress muted">
-                    <div style={{ width: `${ltvProgress}%` }} />
-                  </div>
-                </article>
-              )}
-              <article
-                className={`summary-card leftover ${
-                  remainingNetIncome < 0 ? "negative" : ""
-                }`}
-              >
-                <p>Kvar av nettolön</p>
-                <h3>{SEK.format(remainingNetIncome ?? 0)}</h3>
-                <span>
-                  {remainingNetIncome < 0
-                    ? "Saknas för att täcka allt"
-                    : "Till övers efter alla kostnader"}
-                </span>
-                <div className="progress muted">
-                  <div style={{ width: `${leftoverProgress}%` }} />
-                </div>
-              </article>
-            </div>
-            <div className="plan-callout">
-              <div>
-                <h3>Plan att lägga undan</h3>
-                <p>
-                  För att täcka alla kostnader behöver du spara{" "}
-                  <strong>{SEK.format(combinedMonthlyPlan)}</strong> varje månad.
-                </p>
-              </div>
-              <ul>
-                <li>
-                  <span>Bolånedel</span>
-                  <strong>{SEK.format(loanMonthlyTotal)}</strong>
-                </li>
-                <li>
-                  <span>Övriga kostnader</span>
-                  <strong>{SEK.format(extraMonthlyTotal)}</strong>
-                </li>
-                <li>
-                  <span>Sparande</span>
-                  <strong>{SEK.format(savingsMonthlyTotal)}</strong>
-                </li>
-                <li>
-                  <span>Kvar efter allt</span>
-                  <strong className={remainingNetIncome < 0 ? "negative" : ""}>
-                    {SEK.format(remainingNetIncome ?? 0)}
-                  </strong>
-                </li>
-              </ul>
-            </div>
-            {taxAdjustmentEnabled && (
-              <div className="tax-adjustment-banner">
-                <p>
-                  Skattejämkning aktiv: +{" "}
-                  <strong>{SEK.format(interestDeductionMonthly)}</strong> netto /
-                  månad.
-                </p>
-                <span>
-                  Beräkningen använder justerad nettolön på{" "}
-                  <strong>{SEK.format(incomeForPlan ?? netMonthlyIncome ?? 0)}</strong>.
-                </span>
-              </div>
-            )}
-          </section>
-        ) : (
-          <section className="summary-grid-container">
-            <p className="placeholder">Fyll i dina uppgifter för att se översikten.</p>
-          </section>
+          </div>
+          {feedback && <p className="save-feedback">{feedback}</p>}
+          {error && <p className="error">{error}</p>}
+        </form>
+          </div>
         )}
-      </div>
-      <div className={`tab-panel results-panel ${activeTab === "results" ? "active" : ""}`}>
+
+      {activeTab === "results" && (
+        <>
         {result?.totals ? (
           <section className="results">
             <div className="results-header">
@@ -2914,8 +3977,10 @@ function App() {
             <p className="placeholder">Fyll i dina uppgifter för att se resultat och scenarion.</p>
           </section>
         )}
-      </div>
-      <div className={`tab-panel forecast-panel ${activeTab === "forecast" ? "active" : ""}`}>
+        </>
+      )}
+
+      {activeTab === "forecast" && (
         <section className="forecast-panel-content">
           {result?.totals ? (
             <>
@@ -3119,7 +4184,167 @@ function App() {
             </p>
           )}
         </section>
-      </div>
+      )}
+
+      {customTabs.map((tab) =>
+        activeTab === tab.id ? (
+          <section key={tab.id} className="results custom-results">
+            <div className="results-header">
+              <div>
+                <h2>{tab.label}</h2>
+                <p>Din egen flik för anteckningar eller extra data.</p>
+              </div>
+              <button type="button" className="link-button" onClick={() => removeCustomTab(tab.id)}>
+                Ta bort flik
+              </button>
+            </div>
+            <textarea
+              className="custom-note"
+              placeholder="Skriv egna anteckningar eller lägg in siffror här..."
+              value={tab.note ?? ""}
+              onChange={(event) => handleCustomTabNoteChange(tab.id, event.target.value)}
+            />
+          </section>
+        ) : null,
+      )}
+      {activeTab === "outcome" && (
+        <section className="results outcome-panel">
+          <div className="results-header">
+            <div>
+              <h2>Utfall per månad</h2>
+              <p>Fyll i faktiska kostnader per post och se avvikelsen mot budget.</p>
+            </div>
+            <label className="outcome-month">
+              <span>Månad</span>
+              <input
+                type="month"
+                value={outcomeMonth}
+                onChange={(event) => setOutcomeMonth(event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="outcome-summary">
+            <div>
+              <p>Budget denna månad</p>
+              <strong>{SEK.format(outcomeSummary.budgetTotal)}</strong>
+            </div>
+            <div>
+              <p>Utfall</p>
+              <strong>{SEK.format(outcomeSummary.actualTotal)}</strong>
+              <span className={outcomeSummary.diffTotal > 0 ? "over" : ""}>
+                Diff {formatCurrencyDiff(outcomeSummary.diffTotal)}
+              </span>
+            </div>
+          </div>
+            <div className="outcome-table-wrap">
+            <table className="outcome-table">
+              <thead>
+                <tr>
+                  <th>Post</th>
+                  <th>Budget (kr/mån)</th>
+                  <th>Utfall (kr)</th>
+                  <th>Avvikelse</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outcomeSummary.rows.map((row) => {
+                  const isOver = row.actual > row.budget;
+                  return (
+                    <tr key={row.id} className={isOver ? "over" : ""}>
+                      <td>{row.label}</td>
+                      <td>{SEK.format(row.budget)}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          value={currentOutcome[row.id] ?? ""}
+                          onChange={(event) => handleOutcomeChange(row.id, event.target.value)}
+                          placeholder="0"
+                        />
+                      </td>
+                      <td>{formatCurrencyDiff(row.diff)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="outcome-extra">
+              <div className="extra-fields">
+                <input
+                  type="text"
+                  placeholder="Ny post (t.ex. El-nät Vattenfall)"
+                  value={newOutcomeExtra.label}
+                  onChange={(event) =>
+                    setNewOutcomeExtra((prev) => ({ ...prev, label: event.target.value }))
+                  }
+                />
+                <select
+                  value={newOutcomeExtra.linkId}
+                  onChange={(event) =>
+                    setNewOutcomeExtra((prev) => ({ ...prev, linkId: event.target.value }))
+                  }
+                >
+                  <option value="">Koppla till budgetpost (valfritt)</option>
+                  {budgetOutcomeRows.map((row) => (
+                    <option key={`link-${row.id}`} value={row.id}>
+                      {row.label} · {SEK.format(row.budget)}
+                    </option>
+                  ))}
+                </select>
+                {(() => {
+                  const linked = budgetOutcomeRows.find((row) => row.id === newOutcomeExtra.linkId);
+                  const budgetValue = linked ? linked.budget : newOutcomeExtra.budget;
+                  return (
+                    <input
+                      type="number"
+                      placeholder="Budget"
+                      value={budgetValue}
+                      disabled={Boolean(linked)}
+                      onChange={(event) =>
+                        setNewOutcomeExtra((prev) => ({ ...prev, budget: event.target.value }))
+                      }
+                    />
+                  );
+                })()}
+                <input
+                  type="number"
+                  placeholder="Budget"
+                  value={newOutcomeExtra.actual}
+                  onChange={(event) =>
+                    setNewOutcomeExtra((prev) => ({ ...prev, actual: event.target.value }))
+                  }
+                />
+                <button type="button" className="ghost" onClick={addOutcomeExtra}>
+                  Lägg till manuell post
+                </button>
+              </div>
+              {outcomeExtras.length > 0 && (
+                <ul className="outcome-extra-list">
+                  {outcomeExtras.map((item, index) => (
+                    <li key={`man-${index}`}>
+                      <span>{item.label}</span>
+                      <span>
+                        Budget {SEK.format(Number(item.budget) || 0)} · Utfall{" "}
+                        {SEK.format(Number(item.actual) || 0)}
+                      </span>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => removeOutcomeExtra(index)}
+                      >
+                        Ta bort
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+          <p className="metric-note">
+            Tips: Lämna fält tomma om du inte har utfall än. Rader över budget markeras i rött.
+          </p>
+        </section>
+      )}
       <div className="print-only">
         {result?.totals ? (
           <section className="print-report">
@@ -3282,9 +4507,45 @@ function App() {
           </section>
         )}
       </div>
+        </>
+        )}
     </main>
     </div>
   );
 }
 
 export default App;
+  const handleTibberSync = async () => {
+    setAddressError("");
+    if (!electricity.tibberToken) {
+      setAddressError("Lägg in din Tibber-token först.");
+      return;
+    }
+    try {
+      setAddressLoading(true);
+      const response = await authFetch(authToken, `${API_BASE_URL}/api/tibber/price`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: electricity.tibberToken }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte hämta Tibber-data.");
+      }
+      const data = await response.json();
+      setElectricity((prev) => ({
+        ...prev,
+        price: data.price != null ? data.price : prev.price,
+        consumption:
+          data.annualConsumption != null
+            ? Math.round(Number(data.annualConsumption))
+            : prev.consumption,
+      }));
+      showFeedback("Hämtade Tibber-data ✅");
+    } catch (err) {
+      console.error("Tibber sync failed", err);
+      setAddressError(err.message || "Kunde inte hämta Tibber-data.");
+    } finally {
+      setAddressLoading(false);
+    }
+  };

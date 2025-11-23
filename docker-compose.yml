@@ -8,3 +8,7 @@ services:
       - "4000:4000"
     environment:
       - NODE_ENV=production
+      - ADMIN_KEY=dinhemlignyckel
+      - GOOGLE_MAPS_KEY=AIzaSyC9aj3TzHae97h82YjoKk0K09GzH5kul6s
+    volumes:
+      - ./server/data:/app/server/data
