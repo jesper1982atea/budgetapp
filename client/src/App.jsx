@@ -1437,6 +1437,41 @@ const budgetOutcomeRows = useMemo(() => {
     setElectricity((prev) => ({ ...prev, [name]: value }));
   };
 
+  const handleTibberSync = async () => {
+    setAddressError("");
+    if (!electricity.tibberToken) {
+      setAddressError("Lägg in din Tibber-token först.");
+      return;
+    }
+    try {
+      setAddressLoading(true);
+      const response = await authFetch(authToken, `${API_BASE_URL}/api/tibber/price`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: electricity.tibberToken }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte hämta Tibber-data.");
+      }
+      const data = await response.json();
+      setElectricity((prev) => ({
+        ...prev,
+        price: data.price != null ? data.price : prev.price,
+        consumption:
+          data.annualConsumption != null
+            ? Math.round(Number(data.annualConsumption))
+            : prev.consumption,
+      }));
+      showFeedback("Hämtade Tibber-data ✅");
+    } catch (err) {
+      console.error("Tibber sync failed", err);
+      setAddressError(err.message || "Kunde inte hämta Tibber-data.");
+    } finally {
+      setAddressLoading(false);
+    }
+  };
+
   const handlePropertyInfoChange = (event) => {
     const { name, value } = event.target;
     setPropertyInfo((prev) => ({ ...prev, [name]: value }));
@@ -4515,37 +4550,3 @@ const refreshProfiles = useCallback(async () => {
 }
 
 export default App;
-  const handleTibberSync = async () => {
-    setAddressError("");
-    if (!electricity.tibberToken) {
-      setAddressError("Lägg in din Tibber-token först.");
-      return;
-    }
-    try {
-      setAddressLoading(true);
-      const response = await authFetch(authToken, `${API_BASE_URL}/api/tibber/price`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: electricity.tibberToken }),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error || "Kunde inte hämta Tibber-data.");
-      }
-      const data = await response.json();
-      setElectricity((prev) => ({
-        ...prev,
-        price: data.price != null ? data.price : prev.price,
-        consumption:
-          data.annualConsumption != null
-            ? Math.round(Number(data.annualConsumption))
-            : prev.consumption,
-      }));
-      showFeedback("Hämtade Tibber-data ✅");
-    } catch (err) {
-      console.error("Tibber sync failed", err);
-      setAddressError(err.message || "Kunde inte hämta Tibber-data.");
-    } finally {
-      setAddressLoading(false);
-    }
-  };
