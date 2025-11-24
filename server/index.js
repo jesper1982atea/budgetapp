@@ -4,12 +4,16 @@ const path = require("path");
 const fs = require("fs");
 const { randomUUID, createHash, randomBytes, scryptSync, timingSafeEqual } = require("crypto");
 const sqlite3 = require("sqlite3").verbose();
+const { OAuth2Client } = require("google-auth-library");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const DB_PATH = path.join(__dirname, "data", "budget.db");
-const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY || "";
-const ADMIN_KEY = process.env.ADMIN_KEY || "";
+const SETTINGS_KEYS = {
+  ADMIN_PASSWORD_HASH: "admin_password_hash",
+  GOOGLE_MAPS_KEY: "google_maps_key",
+  GOOGLE_OAUTH_CLIENT_ID: "google_oauth_client_id",
+};
 
 app.use(cors());
 app.use(express.json());
@@ -54,6 +58,12 @@ const ensureDb = () => {
   const db = new sqlite3.Database(DB_PATH);
   db.serialize(() => {
     db.run(
+      `CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )`,
+    );
+    db.run(
       `CREATE TABLE IF NOT EXISTS profiles (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -91,6 +101,7 @@ const ensureDb = () => {
       if (err) return;
       const hasOnboarding = (columns || []).some((col) => col.name === "onboarding_done");
       const hasContribute = (columns || []).some((col) => col.name === "contribute_metrics");
+      const hasGoogleSub = (columns || []).some((col) => col.name === "google_sub");
       if (!hasOnboarding) {
         db.run(`ALTER TABLE users ADD COLUMN onboarding_done INTEGER DEFAULT 0`, () => {
           db.run(`UPDATE users SET onboarding_done = 0 WHERE onboarding_done IS NULL`);
@@ -99,6 +110,13 @@ const ensureDb = () => {
       if (!hasContribute) {
         db.run(`ALTER TABLE users ADD COLUMN contribute_metrics INTEGER DEFAULT 0`, () => {
           db.run(`UPDATE users SET contribute_metrics = 0 WHERE contribute_metrics IS NULL`);
+        });
+      }
+      if (!hasGoogleSub) {
+        db.run(`ALTER TABLE users ADD COLUMN google_sub TEXT`, () => {
+          db.run(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL`,
+          );
         });
       }
     });
@@ -131,6 +149,63 @@ const ensureDb = () => {
 
 const db = ensureDb();
 
+const getSetting = (key) =>
+  new Promise((resolve, reject) => {
+    db.get(`SELECT value FROM settings WHERE key = ?`, [key], (err, row) => {
+      if (err) return reject(err);
+      resolve(row ? row.value : null);
+    });
+  });
+
+const setSetting = (key, value) =>
+  new Promise((resolve, reject) => {
+    db.run(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [key, value],
+      function (err) {
+        if (err) return reject(err);
+        resolve(value);
+      },
+    );
+  });
+
+const seedSettingsFromEnv = () => {
+  const envAdminKey = process.env.ADMIN_KEY;
+  const envGoogleKey = process.env.GOOGLE_MAPS_KEY;
+  const envGoogleClientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  if (envAdminKey) {
+    getSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH)
+      .then((existing) => {
+        if (!existing) {
+          return setSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH, hashPassword(envAdminKey));
+        }
+        return null;
+      })
+      .catch((err) => console.warn("Failed to seed admin key from env", err));
+  }
+  if (envGoogleKey) {
+    getSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY)
+      .then((existing) => {
+        if (!existing) {
+          return setSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY, envGoogleKey);
+        }
+        return null;
+      })
+      .catch((err) => console.warn("Failed to seed Google key from env", err));
+  }
+  if (envGoogleClientId) {
+    getSetting(SETTINGS_KEYS.GOOGLE_OAUTH_CLIENT_ID)
+      .then((existing) => {
+        if (!existing) {
+          return setSetting(SETTINGS_KEYS.GOOGLE_OAUTH_CLIENT_ID, envGoogleClientId);
+        }
+        return null;
+      })
+      .catch((err) => console.warn("Failed to seed Google OAuth client id from env", err));
+  }
+};
+
 const hashPassword = (password) => {
   const salt = randomBytes(16);
   const hash = scryptSync(password, salt, 64);
@@ -143,6 +218,33 @@ const verifyPassword = (password, stored) => {
   const storedHash = Buffer.from(hashHex, "hex");
   return timingSafeEqual(hash, storedHash);
 };
+
+seedSettingsFromEnv();
+
+const GOOGLE_LOGIN_ERRORS = {
+  NOT_CONFIGURED: "GOOGLE_LOGIN_NOT_CONFIGURED",
+};
+
+const getGoogleClientId = async () => {
+  const stored = await getSetting(SETTINGS_KEYS.GOOGLE_OAUTH_CLIENT_ID);
+  return stored || process.env.GOOGLE_OAUTH_CLIENT_ID || "";
+};
+
+const mapDbUser = (row) => {
+  if (!row) return null;
+  return {
+    ...row,
+    username: row.username || row.email,
+    onboarding_done: row.onboarding_done ?? row.onboardingDone ?? 0,
+    contribute_metrics: row.contribute_metrics ?? row.contributeMetrics ?? 0,
+  };
+};
+
+const formatUserResponse = (user) => ({
+  username: user.username || user.email,
+  onboardingDone: user.onboarding_done ?? user.onboardingDone ?? 0,
+  contributeMetrics: user.contribute_metrics ?? user.contributeMetrics ?? 0,
+});
 
 const createUser = (username, password) =>
   new Promise((resolve, reject) => {
@@ -165,9 +267,77 @@ const findUserByUsername = (username) =>
   new Promise((resolve, reject) => {
     db.get(`SELECT * FROM users WHERE email = ?`, [username], (err, row) => {
       if (err) return reject(err);
-      resolve(row || null);
+      resolve(mapDbUser(row));
     });
   });
+
+const findUserByGoogleSub = (googleSub) =>
+  new Promise((resolve, reject) => {
+    if (!googleSub) return resolve(null);
+    db.get(`SELECT * FROM users WHERE google_sub = ?`, [googleSub], (err, row) => {
+      if (err) return reject(err);
+      resolve(mapDbUser(row));
+    });
+  });
+
+const linkGoogleAccount = (userId, googleSub) =>
+  new Promise((resolve, reject) => {
+    if (!userId) return reject(new Error("Missing user id"));
+    db.run(
+      `UPDATE users SET google_sub = ? WHERE id = ?`,
+      [googleSub, userId],
+      function (err) {
+        if (err) return reject(err);
+        resolve(true);
+      },
+    );
+  });
+
+const createGoogleUser = ({ email, googleSub }) =>
+  new Promise((resolve, reject) => {
+    if (!email || !googleSub) return reject(new Error("Invalid Google user"));
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const passwordHash = hashPassword(randomBytes(24).toString("hex"));
+    db.run(
+      `INSERT INTO users (id, email, password_hash, created_at, onboarding_done, contribute_metrics, google_sub) VALUES (?, ?, ?, ?, 0, 0, ?)`,
+      [id, email, passwordHash, now, googleSub],
+      function (err) {
+        if (err) {
+          return reject(err);
+        }
+        resolve({
+          id,
+          email,
+          username: email,
+          onboarding_done: 0,
+          contribute_metrics: 0,
+          google_sub: googleSub,
+        });
+      }
+    );
+  });
+
+const verifyGoogleCredential = async (credential) => {
+  if (!credential) {
+    const err = new Error("Missing credential");
+    err.code = "MISSING_CREDENTIAL";
+    throw err;
+  }
+  const clientId = await getGoogleClientId();
+  if (!clientId) {
+    const err = new Error("Google login not configured");
+    err.code = GOOGLE_LOGIN_ERRORS.NOT_CONFIGURED;
+    throw err;
+  }
+  const client = new OAuth2Client(clientId);
+  const ticket = await client.verifyIdToken({
+    idToken: credential,
+    audience: clientId,
+  });
+  const payload = ticket.getPayload();
+  return { payload, clientId };
+};
 
 const createSession = (userId) =>
   new Promise((resolve, reject) => {
@@ -399,15 +569,55 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Fel användarnamn eller lösenord." });
     }
     const session = await createSession(user.id);
+    const publicUser = formatUserResponse(user);
     res.json({
       token: session.token,
-      username: user.username,
-      onboardingDone: user.onboarding_done,
-      contributeMetrics: user.contribute_metrics,
+      username: publicUser.username,
+      onboardingDone: publicUser.onboardingDone,
+      contributeMetrics: publicUser.contributeMetrics,
     });
   } catch (err) {
     console.error("Login failed", err);
     res.status(500).json({ error: "Kunde inte logga in." });
+  }
+});
+
+app.post("/api/auth/google", async (req, res) => {
+  try {
+    const credential = req.body?.credential;
+    const { payload } = await verifyGoogleCredential(credential);
+    const googleSub = payload?.sub;
+    const email = (payload?.email || "").trim().toLowerCase();
+    if (!googleSub || !email) {
+      return res.status(400).json({ error: "Ogiltig Google-användare." });
+    }
+    let user = await findUserByGoogleSub(googleSub);
+    if (!user) {
+      const existingEmailUser = await findUserByUsername(email);
+      if (existingEmailUser) {
+        await linkGoogleAccount(existingEmailUser.id, googleSub);
+        user = existingEmailUser;
+      } else {
+        user = await createGoogleUser({ email, googleSub });
+      }
+    }
+    const session = await createSession(user.id);
+    const publicUser = formatUserResponse(user);
+    res.json({
+      token: session.token,
+      username: publicUser.username,
+      onboardingDone: publicUser.onboardingDone,
+      contributeMetrics: publicUser.contributeMetrics,
+    });
+  } catch (err) {
+    if (err.code === GOOGLE_LOGIN_ERRORS.NOT_CONFIGURED) {
+      return res.status(503).json({ error: "Google-inloggning är inte konfigurerad." });
+    }
+    if (err.code === "MISSING_CREDENTIAL") {
+      return res.status(400).json({ error: "Google-token saknas." });
+    }
+    console.error("Google login failed", err);
+    res.status(500).json({ error: "Kunde inte logga in med Google." });
   }
 });
 
@@ -555,7 +765,9 @@ app.post("/api/tibber/price", async (req, res) => {
           currentSubscription {
             priceInfo { current { total } }
           }
-          consumption(resolution: MONTHLY, first: 1) { nodes { consumption } }
+          monthly: consumption(resolution: MONTHLY, first: 12) {
+            nodes { consumption from }
+          }
         }
       }
     }
@@ -576,8 +788,31 @@ app.post("/api/tibber/price", async (req, res) => {
     }
     const home = data?.data?.viewer?.homes?.[0];
     const price = home?.currentSubscription?.priceInfo?.current?.total ?? null;
-    const monthlyConsumption = home?.consumption?.nodes?.[0]?.consumption ?? null;
-    res.json({ price, monthlyConsumption });
+    const monthlyNodes = Array.isArray(home?.monthly?.nodes) ? home.monthly.nodes : [];
+    const monthlyConsumption = monthlyNodes[0]?.consumption ?? null;
+    const previousMonthlyConsumption = monthlyNodes[1]?.consumption ?? null;
+    const monthlyCost =
+      monthlyConsumption != null && price != null ? monthlyConsumption * price : null;
+    const previousMonthlyCost =
+      previousMonthlyConsumption != null && price != null
+        ? previousMonthlyConsumption * price
+        : null;
+    const annualConsumption = monthlyNodes.reduce((sum, node) => {
+      const value = Number(node?.consumption);
+      return Number.isFinite(value) ? sum + value : sum;
+    }, 0);
+    res.json({
+      price,
+      monthlyConsumption,
+      previousMonthlyConsumption,
+      monthlyCost,
+      previousMonthlyCost,
+      monthlyPeriods: monthlyNodes.map((node) => ({
+        from: node?.from,
+        consumption: node?.consumption ?? null,
+      })),
+      annualConsumption: annualConsumption || null,
+    });
   } catch (err) {
     console.error("Tibber fetch failed", err);
     res.status(500).json({ error: `Kunde inte hämta Tibber-data: ${err.message || "okänt fel"}` });
@@ -676,18 +911,105 @@ app.delete("/api/profiles/:id", async (req, res) => {
   });
 });
 
-const adminKey = process.env.ADMIN_KEY || "";
+app.get("/api/settings/status", async (_req, res) => {
+  try {
+    const [adminHash, googleKey, googleClientId] = await Promise.all([
+      getSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH),
+      getSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY),
+      getGoogleClientId(),
+    ]);
+    res.json({
+      adminConfigured: Boolean(adminHash),
+      googleKeyConfigured: Boolean(googleKey),
+      googleLoginConfigured: Boolean(googleClientId),
+      googleClientId: googleClientId || "",
+    });
+  } catch (err) {
+    console.error("Failed to fetch settings status", err);
+    res.status(500).json({ error: "Kunde inte läsa serverinställningar." });
+  }
+});
+
+app.post("/api/settings/initialize", async (req, res) => {
+  try {
+    const existingHash = await getSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH);
+    const requiresAdmin = Boolean(existingHash);
+    if (requiresAdmin) {
+      const header = req.headers["x-admin-key"];
+      if (!header || !verifyPassword(header, existingHash)) {
+        return res.status(401).json({ error: "Fel adminlösen." });
+      }
+    }
+    const adminPassword = (req.body?.adminPassword || "").trim();
+    const googleMapsKey = (req.body?.googleMapsKey || "").trim();
+    const googleClientId = (req.body?.googleClientId || "").trim();
+    if (!existingHash && (!adminPassword || !googleMapsKey)) {
+      return res.status(400).json({
+        error: "Ange både adminlösen och Google Maps-nyckel vid första konfigurationen.",
+      });
+    }
+    const updates = [];
+    if (adminPassword) {
+      updates.push(setSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH, hashPassword(adminPassword)));
+    }
+    if (googleMapsKey) {
+      updates.push(setSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY, googleMapsKey));
+    }
+    if (googleClientId) {
+      updates.push(setSetting(SETTINGS_KEYS.GOOGLE_OAUTH_CLIENT_ID, googleClientId));
+    }
+    if (updates.length === 0) {
+      return res.status(400).json({ error: "Inga ändringar att spara." });
+    }
+    await Promise.all(updates);
+    const [adminHash, googleKey, oauthClientId] = await Promise.all([
+      getSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH),
+      getSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY),
+      getGoogleClientId(),
+    ]);
+    res.json({
+      adminConfigured: Boolean(adminHash),
+      googleKeyConfigured: Boolean(googleKey),
+      googleLoginConfigured: Boolean(oauthClientId),
+      googleClientId: oauthClientId || "",
+    });
+  } catch (err) {
+    console.error("Failed to initialize settings", err);
+    res.status(500).json({ error: "Kunde inte spara inställningarna." });
+  }
+});
 
 const requireAdmin = (req, res, next) => {
-  if (!adminKey) {
-    return res.status(403).json({ error: "Admin-nyckel saknas i servern." });
-  }
-  const key = req.headers["x-admin-key"];
-  if (key !== adminKey) {
-    return res.status(401).json({ error: "Fel admin-nyckel." });
-  }
-  next();
+  getSetting(SETTINGS_KEYS.ADMIN_PASSWORD_HASH)
+    .then((storedHash) => {
+      if (!storedHash) {
+        return res
+          .status(403)
+          .json({ error: "Adminlösen saknas. Kör initial konfiguration." });
+      }
+      const provided = req.headers["x-admin-key"];
+      if (!provided) {
+        return res.status(401).json({ error: "Ange adminlösen via X-Admin-Key." });
+      }
+      try {
+        if (!verifyPassword(provided, storedHash)) {
+          return res.status(401).json({ error: "Fel adminlösen." });
+        }
+      } catch (err) {
+        console.error("Admin verification failed", err);
+        return res.status(500).json({ error: "Kunde inte verifiera admin." });
+      }
+      next();
+    })
+    .catch((err) => {
+      console.error("Admin lookup failed", err);
+      res.status(500).json({ error: "Kunde inte verifiera admin." });
+    });
 };
+
+app.post("/api/settings/verify-admin", requireAdmin, (_req, res) => {
+  res.json({ success: true });
+});
 
 app.get("/api/admin/users", requireAdmin, (_req, res) => {
   db.all(
@@ -738,8 +1060,15 @@ app.get("/api/place-autocomplete", async (req, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "Logga in för att söka adress." });
   }
-  if (!GOOGLE_MAPS_KEY) {
-    return res.status(500).json({ error: "GOOGLE_MAPS_KEY saknas på servern." });
+  let googleMapsKey = "";
+  try {
+    googleMapsKey = await getSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY);
+  } catch (err) {
+    console.error("Failed to read Google Maps key", err);
+    return res.status(500).json({ error: "Kunde inte läsa Google Maps-nyckeln." });
+  }
+  if (!googleMapsKey) {
+    return res.status(500).json({ error: "Google Maps-nyckel saknas på servern." });
   }
   const input = (req.query.input || "").toString();
   const sessiontoken = (req.query.sessiontoken || "").toString();
@@ -749,7 +1078,7 @@ app.get("/api/place-autocomplete", async (req, res) => {
   try {
     const params = new URLSearchParams({
       input,
-      key: GOOGLE_MAPS_KEY,
+      key: googleMapsKey,
       sessiontoken,
       language: "sv",
     });
@@ -764,6 +1093,162 @@ app.get("/api/place-autocomplete", async (req, res) => {
   } catch (err) {
     console.error("Place autocomplete failed", err);
     res.status(500).json({ error: "Kunde inte hämta adresser." });
+  }
+});
+
+app.get("/api/place-preview", async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Logga in för att hämta kartförhandsgranskning." });
+  }
+  const address = (req.query.address || "").toString().trim();
+  if (!address) {
+    return res.status(400).json({ error: "Ange en adress." });
+  }
+  let googleMapsKey = "";
+  try {
+    googleMapsKey = await getSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY);
+  } catch (err) {
+    console.error("Failed to read Google Maps key", err);
+    return res.status(500).json({ error: "Kunde inte läsa Google Maps-nyckeln." });
+  }
+  if (!googleMapsKey) {
+    return res.status(500).json({ error: "Google Maps-nyckel saknas på servern." });
+  }
+  try {
+    const geocodeParams = new URLSearchParams({
+      address,
+      key: googleMapsKey,
+      language: "sv",
+    });
+    const geocodeResp = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?${geocodeParams.toString()}`,
+    );
+    if (!geocodeResp.ok) {
+      throw new Error("Geocode misslyckades");
+    }
+    const geocodeData = await geocodeResp.json();
+    const result = geocodeData?.results?.[0];
+    if (!result) {
+      return res.status(404).json({ error: "Hittade ingen matchande adress." });
+    }
+    const location = result.geometry?.location;
+    if (!location?.lat || !location?.lng) {
+      return res.status(404).json({ error: "Kunde inte hitta koordinater för adressen." });
+    }
+    const lat = location.lat;
+    const lng = location.lng;
+    const fetchImage = async (url) => {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error("Kunde inte hämta bild");
+      }
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      return `data:image/jpeg;base64,${buffer.toString("base64")}`;
+    };
+    const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=16&size=640x360&maptype=roadmap&markers=color:red|${lat},${lng}&key=${googleMapsKey}`;
+    const streetViewUrl = `https://maps.googleapis.com/maps/api/streetview?location=${lat},${lng}&size=640x360&key=${googleMapsKey}`;
+    const [mapImage, streetImage] = await Promise.all([
+      fetchImage(staticMapUrl),
+      fetchImage(streetViewUrl).catch(() => null),
+    ]);
+    res.json({
+      address: result.formatted_address || address,
+      lat,
+      lng,
+      mapImage,
+      streetImage,
+    });
+  } catch (err) {
+    console.error("Place preview failed", err);
+    res.status(500).json({ error: "Kunde inte hämta kartförhandsgranskningen." });
+  }
+});
+
+app.get("/api/place-preview/batch", async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Logga in för att hämta förhandsgranskningar." });
+  }
+  const qs = req.query.q;
+  const query = Array.isArray(qs) ? qs[0] : qs;
+  if (!query || query.length < 3) {
+    return res.json({ predictions: [] });
+  }
+  let googleMapsKey = "";
+  try {
+    googleMapsKey = await getSetting(SETTINGS_KEYS.GOOGLE_MAPS_KEY);
+  } catch (err) {
+    console.error("Failed to read Google Maps key", err);
+    return res.status(500).json({ error: "Kunde inte läsa Google Maps-nyckeln." });
+  }
+  if (!googleMapsKey) {
+    return res.status(500).json({ error: "Google Maps-nyckel saknas på servern." });
+  }
+  try {
+    const autoParams = new URLSearchParams({
+      input: query,
+      sessiontoken: (req.query.sessiontoken || "").toString(),
+      language: "sv",
+      key: googleMapsKey,
+    });
+    const autoResp = await fetch(
+      `https://maps.googleapis.com/maps/api/place/autocomplete/json?${autoParams.toString()}`,
+    );
+    if (!autoResp.ok) {
+      throw new Error("Autocomplete misslyckades");
+    }
+    const autoData = await autoResp.json();
+    const predictions = Array.isArray(autoData?.predictions)
+      ? autoData.predictions
+      : [];
+    const results = await Promise.all(
+      predictions.map(async (prediction) => {
+        try {
+          const geocodeParams = new URLSearchParams({
+            place_id: prediction.place_id,
+            key: googleMapsKey,
+            language: "sv",
+          });
+          const geoResp = await fetch(
+            `https://maps.googleapis.com/maps/api/geocode/json?${geocodeParams.toString()}`,
+          );
+          if (!geoResp.ok) {
+            throw new Error("Geocode misslyckades");
+          }
+          const geoData = await geoResp.json();
+          const geoResult = geoData?.results?.[0];
+          if (!geoResult?.geometry?.location) {
+            return null;
+          }
+          const { lat, lng } = geoResult.geometry.location;
+          const streetUrl = `https://maps.googleapis.com/maps/api/streetview?location=${lat},${lng}&size=200x120&key=${googleMapsKey}`;
+          const resp = await fetch(streetUrl);
+          if (!resp.ok) {
+            return {
+              description: prediction.description,
+              place_id: prediction.place_id,
+              streetImage: null,
+            };
+          }
+          const buffer = Buffer.from(await resp.arrayBuffer());
+          return {
+            description: prediction.description,
+            place_id: prediction.place_id,
+            streetImage: `data:image/jpeg;base64,${buffer.toString("base64")}`,
+          };
+        } catch (err) {
+          console.error("Batch preview failed", err);
+          return {
+            description: prediction.description,
+            place_id: prediction.place_id,
+            streetImage: null,
+          };
+        }
+      }),
+    );
+    res.json({ predictions: results.filter(Boolean) });
+  } catch (err) {
+    console.error("Batch preview autocomplete failed", err);
+    res.status(500).json({ error: "Kunde inte hämta adressförhandsgranskningar." });
   }
 });
 

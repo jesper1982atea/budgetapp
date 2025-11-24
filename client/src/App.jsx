@@ -20,6 +20,14 @@ const NUMBER = new Intl.NumberFormat("sv-SE", {
   maximumFractionDigits: 1,
 });
 
+const BROADBAND_CONNECTION_LABELS = {
+  fiber: "Fiber",
+  dsl: "DSL",
+  coax: "Coax / kabel-tv",
+  "4g": "4G / 5G",
+  other: "Annat",
+};
+
 const TAX_TABLES = [
   { id: "29", label: "Tabell 29 (~29% skatt)", rate: 0.29 },
   { id: "30", label: "Tabell 30 (~30% skatt)", rate: 0.3 },
@@ -68,6 +76,25 @@ const formatAmountPreview = (value) => {
   return currency || magnitude;
 };
 
+const THEME_STORAGE_KEY = "budgetapp:theme";
+
+const getPreferredTheme = () => {
+  if (typeof window !== "undefined") {
+    try {
+      const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored === "dark" || stored === "light") {
+        return stored;
+      }
+    } catch (err) {
+      console.warn("Failed to access saved theme", err);
+    }
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      return "dark";
+    }
+  }
+  return "light";
+};
+
 const DEFAULT_CATEGORIES = [
   { id: "drift", name: "Drift & hushåll" },
   { id: "mat", name: "Mat & dagligvaror" },
@@ -81,7 +108,22 @@ const initialExtraCost = {
   shareWithEx: false,
   categoryId: DEFAULT_CATEGORIES[0].id,
 };
-const initialPropertyInfo = { name: "", value: "" };
+const BUILDING_TYPES = [
+  { id: "garage", label: "Garage", requiresArea: true },
+  { id: "atterfall", label: "Attefallshus", requiresArea: true },
+  { id: "friggebod", label: "Friggebod", requiresArea: true },
+  { id: "carport", label: "Carport", requiresArea: false },
+  { id: "shed", label: "Förråd", requiresArea: false },
+  { id: "other", label: "Annat", requiresArea: false },
+];
+
+const initialPropertyInfo = {
+  name: "",
+  value: "",
+  designation: "",
+  areaSqm: "",
+  buildings: [],
+};
 const initialSavingsItem = { name: "", amount: "", frequency: "monthly" };
 const STORAGE_KEY = "budgetapp:savedLoanData";
 const TOKEN_KEY = "budgetapp:authToken";
@@ -93,6 +135,39 @@ const createCostId = () =>
 const createCategoryId = () => createCostId();
 
 const createPersonId = () => createCostId();
+
+const createBuildingId = () => createCostId();
+
+const createBuildingEntry = (overrides = {}) => ({
+  id: overrides.id ?? createBuildingId(),
+  type: overrides.type ?? "",
+  area: overrides.area != null ? String(overrides.area) : "",
+  notes: overrides.notes ?? "",
+});
+
+const normalizeBuildings = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) =>
+        createBuildingEntry({
+          id: item.id,
+          type: item.type,
+          area: item.area,
+          notes: item.notes ?? item.description ?? "",
+        }),
+      )
+      .filter((item) => item.type || item.notes || item.area);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [
+      createBuildingEntry({
+        type: "other",
+        notes: value.trim(),
+      }),
+    ];
+  }
+  return [];
+};
 
 const createIncomePerson = (overrides = {}) => ({
   id: overrides.id ?? createPersonId(),
@@ -251,6 +326,7 @@ const BASE_TABS = [
   { id: "results", label: "Resultat & scenarion", requiresResult: true, type: "system" },
   { id: "forecast", label: "Prognos & diagram", requiresResult: true, type: "system" },
   { id: "outcome", label: "Utfall", requiresResult: false, type: "system" },
+  { id: "tibber", label: "Tibber test", requiresResult: false, type: "system" },
 ];
 
 const canCalculateLoans = (loans) => {
@@ -292,7 +368,20 @@ function App() {
     provider: "",
     distributor: "",
     tibberToken: "",
+    monthlyCost: null,
+    previousMonthlyCost: null,
+    useTibber: false,
   });
+  const [broadband, setBroadband] = useState({
+    provider: "",
+    connectionType: "",
+    download: "",
+    upload: "",
+    cost: "",
+    frequency: "monthly",
+  });
+  const [showBroadbandForm, setShowBroadbandForm] = useState(false);
+  const [theme, setTheme] = useState(getPreferredTheme);
   const [futureAmortizationPercent, setFutureAmortizationPercent] = useState("0");
   const [scenarioMode, setScenarioMode] = useState("current");
   const [taxAdjustmentEnabled, setTaxAdjustmentEnabled] = useState(false);
@@ -323,10 +412,46 @@ function App() {
     type: "hem",
     notes: "",
   });
+  const [lastPreviewAddress, setLastPreviewAddress] = useState("");
+  const propertyPreviewTimeout = useRef(null);
+  const [propertyPreview, setPropertyPreview] = useState({
+    loading: false,
+    error: "",
+    mapImage: "",
+    streetImage: "",
+    address: "",
+  });
+  const [tibberTestState, setTibberTestState] = useState({
+    token: "",
+    loading: false,
+    error: "",
+    response: null,
+  });
   const propertyInsuranceMonthly = useMemo(
     () => (Number(propertyInsurance.annualPremium) > 0 ? Number(propertyInsurance.annualPremium) / 12 : 0),
     [propertyInsurance.annualPremium],
   );
+  const [settingsStatus, setSettingsStatus] = useState({
+    adminConfigured: true,
+    googleKeyConfigured: true,
+    googleLoginConfigured: false,
+  });
+  const [showSetupPrompt, setShowSetupPrompt] = useState(false);
+  const [setupValues, setSetupValues] = useState({
+    adminPassword: "",
+    googleMapsKey: "",
+    googleClientId: "",
+  });
+  const [setupAdminKey, setSetupAdminKey] = useState("");
+  const [setupUnlocked, setSetupUnlocked] = useState(false);
+  const [setupUnlockError, setSetupUnlockError] = useState("");
+  const [setupUnlocking, setSetupUnlocking] = useState(false);
+  const [setupSubmitting, setSetupSubmitting] = useState(false);
+  const [setupError, setSetupError] = useState("");
+  const [setupSuccess, setSetupSuccess] = useState("");
+  const [googleClientId, setGoogleClientId] = useState("");
+  const [googleSdkReady, setGoogleSdkReady] = useState(false);
+  const googleButtonRef = useRef(null);
   const [forecastYears, setForecastYears] = useState(10);
   const [savingsForecastYears, setSavingsForecastYears] = useState(5);
   const [rateScenarioDelta, setRateScenarioDelta] = useState(1);
@@ -386,12 +511,12 @@ function App() {
         setAddressLoading(true);
         setAddressError("");
         const params = new URLSearchParams({
-          input: addressQuery,
+          q: addressQuery,
           sessiontoken: addressSessionToken,
         });
         const response = await authFetch(
           authToken,
-          `${API_BASE_URL}/api/place-autocomplete?${params.toString()}`,
+          `${API_BASE_URL}/api/place-preview/batch?${params.toString()}`,
           { signal: controller.signal },
         );
         if (!response.ok) {
@@ -423,6 +548,7 @@ function App() {
   const propertyValueNumber = Number(propertyInfo.value);
   const hasPropertyValue = Number.isFinite(propertyValueNumber) && propertyValueNumber > 0;
   const propertyValuePreview = formatAmountPreview(propertyInfo.value);
+  const isDarkMode = theme === "dark";
   const ensureCategoryId = useCallback(
     (candidate) => {
       if (candidate && costCategories.some((category) => category.id === candidate)) {
@@ -682,13 +808,42 @@ function App() {
     [electricity],
   );
 
+  const broadbandMonthly = useMemo(() => {
+    const cost = Number(broadband.cost);
+    if (!Number.isFinite(cost) || cost <= 0) {
+      return 0;
+    }
+    return broadband.frequency === "yearly" ? cost / 12 : cost;
+  }, [broadband]);
+  const broadbandAnnual = broadbandMonthly > 0 ? broadbandMonthly * 12 : 0;
+  const hasBroadbandData = Boolean(
+    broadband.provider ||
+    broadband.connectionType ||
+    broadband.download ||
+    broadband.upload ||
+    broadbandMonthly,
+  );
+  const broadbandConnectionLabel =
+    BROADBAND_CONNECTION_LABELS[broadband.connectionType] ||
+    (broadband.connectionType ? broadband.connectionType : "Inte angivet");
+  const broadbandDownloadLabel = (() => {
+    const parsed = Number(broadband.download);
+    return Number.isFinite(parsed) && parsed > 0 ? `${NUMBER.format(parsed)} Mbit/s` : null;
+  })();
+  const broadbandUploadLabel = (() => {
+    const parsed = Number(broadband.upload);
+    return Number.isFinite(parsed) && parsed > 0 ? `${NUMBER.format(parsed)} Mbit/s` : null;
+  })();
+  const broadbandDownloadText = broadbandDownloadLabel ? `↓ ${broadbandDownloadLabel}` : null;
+  const broadbandUploadText = broadbandUploadLabel ? `↑ ${broadbandUploadLabel}` : null;
+
   const extraMonthlyTotal = useMemo(() => {
     const baseExtra = costItems.reduce(
       (sum, item) => sum + effectiveMonthlyCost(item),
       0,
     );
-    return baseExtra + electricityTotals.monthlyCost + propertyInsuranceMonthly;
-  }, [costItems, electricityTotals.monthlyCost, propertyInsuranceMonthly]);
+    return baseExtra + electricityTotals.monthlyCost + propertyInsuranceMonthly + broadbandMonthly;
+  }, [costItems, electricityTotals.monthlyCost, propertyInsuranceMonthly, broadbandMonthly]);
   const sharedCostItems = useMemo(() => costItems.filter((item) => item.shareWithEx), [costItems]);
   const sharedMonthlyTotals = useMemo(
     () =>
@@ -1038,6 +1193,14 @@ function App() {
         annual: propertyInsuranceMonthly * 12,
       });
     }
+    if (broadbandMonthly > 0) {
+      rows.push({
+        label: "Bredband (boende)",
+        amount: broadbandMonthly,
+        originalAmount: broadbandMonthly,
+        annual: broadbandMonthly * 12,
+      });
+    }
     savingsItems.forEach((item) => {
       const monthly = monthlyCostValue(item);
       rows.push({
@@ -1062,6 +1225,7 @@ function App() {
     electricityTotals.monthlyCost,
     propertyInsuranceMonthly,
     propertyInsurance.provider,
+    broadbandMonthly,
     combinedMonthlyPlan,
   ]);
 
@@ -1096,6 +1260,7 @@ function App() {
     () => [...BASE_TABS, ...customTabs],
     [customTabs],
   );
+  const needsInitialSetup = !settingsStatus.adminConfigured || !settingsStatus.googleKeyConfigured;
 
   const topLinePlan = isFutureView && futureScenario ? futureScenario.futureCombinedPlan : combinedMonthlyPlan;
   const topLineLoan =
@@ -1168,6 +1333,13 @@ const budgetOutcomeRows = useMemo(() => {
         budget: propertyInsuranceMonthly,
       });
     }
+    if (broadbandMonthly > 0) {
+      rows.push({
+        id: "broadband",
+        label: "Bredband (boende)",
+        budget: broadbandMonthly,
+      });
+    }
     savingsItems.forEach((item) => {
       rows.push({
         id: `saving-${item.id}`,
@@ -1191,6 +1363,7 @@ const budgetOutcomeRows = useMemo(() => {
     outcomeExtras,
     propertyInsuranceMonthly,
     propertyInsurance.provider,
+    broadbandMonthly,
   ]);
 
   const outcomeSummary = useMemo(() => {
@@ -1264,7 +1437,11 @@ const budgetOutcomeRows = useMemo(() => {
             );
           }
           if (parsed.propertyInfo) {
-            setPropertyInfo((prev) => ({ ...prev, ...parsed.propertyInfo }));
+            setPropertyInfo((prev) => ({
+              ...prev,
+              ...parsed.propertyInfo,
+              buildings: normalizeBuildings(parsed.propertyInfo.buildings ?? prev.buildings),
+            }));
           }
           if (parsed.costItems) {
             setCostItems(normalizeSavedCosts(parsed.costItems));
@@ -1292,6 +1469,9 @@ const budgetOutcomeRows = useMemo(() => {
           if (typeof parsed.savingsForecastYears === "number") {
             setSavingsForecastYears(parsed.savingsForecastYears);
           }
+          if (parsed.theme === "dark" || parsed.theme === "light") {
+            setTheme(parsed.theme);
+          }
         } else if (parsed !== null && parsed !== undefined) {
           const legacyIncome =
             typeof parsed === "number"
@@ -1316,12 +1496,109 @@ const budgetOutcomeRows = useMemo(() => {
   }, []);
 
   useEffect(() => {
+    const fetchSettingsStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/status`);
+        if (!response.ok) {
+          throw new Error("Kunde inte läsa serverinställningarna.");
+        }
+        const data = await response.json();
+        const status = {
+          adminConfigured: Boolean(data.adminConfigured),
+          googleKeyConfigured: Boolean(data.googleKeyConfigured),
+          googleLoginConfigured: Boolean(data.googleLoginConfigured),
+        };
+        setSettingsStatus(status);
+        setGoogleClientId(data.googleClientId || "");
+        setShowSetupPrompt(!status.adminConfigured || !status.googleKeyConfigured);
+      } catch (err) {
+        console.error("Failed to fetch server settings status", err);
+      }
+    };
+    fetchSettingsStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!settingsStatus.adminConfigured) {
+      setSetupUnlocked(true);
+    } else {
+      setSetupUnlocked(false);
+    }
+  }, [settingsStatus.adminConfigured]);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") {
+      return undefined;
+    }
+    if (!googleClientId) {
+      setGoogleSdkReady(false);
+      if (googleButtonRef.current) {
+        googleButtonRef.current.innerHTML = "";
+      }
+      return undefined;
+    }
+    if (window.google?.accounts?.id) {
+      setGoogleSdkReady(true);
+      return undefined;
+    }
+    let script = document.getElementById("google-identity-services");
+    const handleReady = () => setGoogleSdkReady(true);
+    const handleError = () => setGoogleSdkReady(false);
+    if (script) {
+      script.addEventListener("load", handleReady);
+      script.addEventListener("error", handleError);
+      return () => {
+        script.removeEventListener("load", handleReady);
+        script.removeEventListener("error", handleError);
+      };
+    }
+    script = document.createElement("script");
+    script.id = "google-identity-services";
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = handleReady;
+    script.onerror = handleError;
+    document.head.appendChild(script);
+    return () => {
+      script.onload = null;
+      script.onerror = null;
+    };
+  }, [googleClientId]);
+
+  useEffect(() => {
     return () => {
       if (feedbackTimeout.current) {
         clearTimeout(feedbackTimeout.current);
       }
     };
   }, []);
+
+  const hasPropertyDetails = Boolean(
+    (propertyInfo.name && propertyInfo.name.trim()) ||
+      (propertyInfo.value && Number(propertyInfo.value) > 0),
+  );
+
+  useEffect(() => {
+    if (!hasPropertyDetails) {
+      setShowPropertyForm(true);
+    }
+  }, [hasPropertyDetails]);
+
+  useEffect(() => {
+    setPropertyPreview((prev) => ({
+      ...prev,
+      mapImage: "",
+      streetImage: "",
+      address: "",
+      error: "",
+    }));
+    setLastPreviewAddress("");
+    if (propertyPreviewTimeout.current) {
+      clearTimeout(propertyPreviewTimeout.current);
+      propertyPreviewTimeout.current = null;
+    }
+  }, [propertyInfo.name]);
 
   useEffect(() => {
     setNewCost((prev) => {
@@ -1338,13 +1615,86 @@ const budgetOutcomeRows = useMemo(() => {
     });
   }, [ensureCategoryId]);
 
-  const showFeedback = (message) => {
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+      } catch (err) {
+        console.warn("Failed to store theme", err);
+      }
+    }
+  }, [theme]);
+
+  const showFeedback = useCallback((message) => {
     if (feedbackTimeout.current) {
       clearTimeout(feedbackTimeout.current);
     }
     setFeedback(message);
     feedbackTimeout.current = setTimeout(() => setFeedback(""), 4000);
-  };
+  }, []);
+
+  const handleGoogleCredential = useCallback(
+    async (credentialResponse) => {
+      const credential = credentialResponse?.credential;
+      if (!credential) {
+        setAuthError("Kunde inte läsa Google-inloggningen.");
+        return;
+      }
+      try {
+        setAuthError("");
+        const response = await fetch(`${API_BASE_URL}/api/auth/google`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credential }),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data?.error || "Kunde inte logga in med Google.");
+        }
+        const data = await response.json();
+        localStorage.setItem(TOKEN_KEY, data.token);
+        setAuthToken(data.token);
+        setCurrentUser({
+          username: data.username,
+          onboardingDone: data.onboardingDone,
+          contributeMetrics: data.contributeMetrics,
+        });
+        setShowOnboarding(!data.onboardingDone);
+        showFeedback("Inloggad via Google ✅");
+      } catch (err) {
+        console.error("Google login failed", err);
+        setAuthError(err.message || "Kunde inte logga in med Google.");
+      }
+    },
+    [showFeedback, setAuthToken, setCurrentUser, setShowOnboarding],
+  );
+
+  useEffect(() => {
+    if (
+      !googleSdkReady ||
+      !googleClientId ||
+      typeof window === "undefined" ||
+      !googleButtonRef.current ||
+      !window.google?.accounts?.id
+    ) {
+      return;
+    }
+    googleButtonRef.current.innerHTML = "";
+    window.google.accounts.id.initialize({
+      client_id: googleClientId,
+      callback: handleGoogleCredential,
+    });
+    window.google.accounts.id.renderButton(googleButtonRef.current, {
+      type: "standard",
+      theme: isDarkMode ? "outline" : "filled_blue",
+      size: "large",
+      text: "continue_with",
+      shape: "pill",
+    });
+  }, [googleSdkReady, googleClientId, handleGoogleCredential, isDarkMode]);
 
   const calculate = useCallback(async (payload) => {
     const snapshot = JSON.stringify(payload);
@@ -1410,6 +1760,7 @@ const budgetOutcomeRows = useMemo(() => {
         futureAmortizationPercent,
         taxAdjustmentEnabled,
         savingsForecastYears,
+        theme,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       showFeedback("Uppgifter sparade ✅");
@@ -1424,6 +1775,115 @@ const budgetOutcomeRows = useMemo(() => {
     showFeedback("Sparade uppgifter borttagna.");
   };
 
+  const handleSetupInputChange = (event) => {
+    const { name, value } = event.target;
+    setSetupValues((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSetupUnlock = async () => {
+    setSetupUnlockError("");
+    if (!setupAdminKey) {
+      setSetupUnlockError("Ange adminlösenordet för servern.");
+      return;
+    }
+    setSetupUnlocking(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/settings/verify-admin`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": setupAdminKey,
+        },
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || "Kunde inte verifiera adminlösenordet.");
+      }
+      setSetupUnlocked(true);
+      setSetupUnlockError("");
+      setSetupSuccess("Adminlösen verifierat ✅");
+    } catch (err) {
+      setSetupUnlockError(err.message || "Fel adminlösen.");
+      setSetupUnlocked(false);
+    } finally {
+      setSetupUnlocking(false);
+    }
+  };
+
+  const handleSubmitSetup = async () => {
+    if (needsInitialSetup && (!setupValues.adminPassword || !setupValues.googleMapsKey)) {
+      setSetupError("Ange både adminlösenord och Google Maps-nyckel.");
+      setSetupSuccess("");
+      return;
+    }
+    if (
+      !setupValues.adminPassword &&
+      !setupValues.googleMapsKey &&
+      !setupValues.googleClientId
+    ) {
+      setSetupError("Ange minst ett fält att uppdatera.");
+      setSetupSuccess("");
+      return;
+    }
+    if (settingsStatus.adminConfigured && !setupUnlocked) {
+      setSetupError("Lås upp serverinställningarna med adminlösen innan du sparar.");
+      setSetupSuccess("");
+      return;
+    }
+    if (settingsStatus.adminConfigured && !setupAdminKey) {
+      setSetupError("Ange adminlösenordet för att spara.");
+      setSetupSuccess("");
+      return;
+    }
+    setSetupSubmitting(true);
+    setSetupError("");
+    setSetupSuccess("");
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (settingsStatus.adminConfigured && setupAdminKey) {
+        headers["x-admin-key"] = setupAdminKey;
+      }
+      const response = await fetch(`${API_BASE_URL}/api/settings/initialize`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          adminPassword: setupValues.adminPassword || undefined,
+          googleMapsKey: setupValues.googleMapsKey || undefined,
+          googleClientId: setupValues.googleClientId || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || "Kunde inte spara inställningarna.");
+      }
+      const data = await response.json();
+      const nextStatus = {
+        adminConfigured: Boolean(data.adminConfigured),
+        googleKeyConfigured: Boolean(data.googleKeyConfigured),
+        googleLoginConfigured: Boolean(data.googleLoginConfigured),
+      };
+      setSettingsStatus(nextStatus);
+      const needsMore = !nextStatus.adminConfigured || !nextStatus.googleKeyConfigured;
+      setShowSetupPrompt(needsMore);
+      if (data.googleClientId) {
+        setGoogleClientId(data.googleClientId);
+      }
+      setSetupValues((prev) => ({
+        ...prev,
+        adminPassword: "",
+        googleMapsKey: "",
+        googleClientId: "",
+      }));
+      setSetupSuccess("Inställningarna sparades ✅");
+    } catch (err) {
+      setSetupError(err.message || "Kunde inte spara inställningarna.");
+    } finally {
+      setSetupSubmitting(false);
+    }
+  };
+
   const handleNewCostChange = (event) => {
     const { name, value, type, checked } = event.target;
     setNewCost((prev) => ({ ...prev, [name]: type === "checkbox" ? checked : value }));
@@ -1435,8 +1895,20 @@ const budgetOutcomeRows = useMemo(() => {
   };
 
   const handleElectricityChange = (event) => {
-    const { name, value } = event.target;
-    setElectricity((prev) => ({ ...prev, [name]: value }));
+    const { name, value, type, checked } = event.target;
+    if (name === "provider") {
+      setElectricity((prev) => ({
+        ...prev,
+        provider: value,
+        useTibber: value === "tibber" ? prev.useTibber : false,
+      }));
+      return;
+    }
+    if (name === "useTibber") {
+      setElectricity((prev) => ({ ...prev, useTibber: checked }));
+      return;
+    }
+    setElectricity((prev) => ({ ...prev, [name]: type === "checkbox" ? checked : value }));
   };
 
   const handleTibberSync = async () => {
@@ -1445,6 +1917,10 @@ const budgetOutcomeRows = useMemo(() => {
       return;
     }
     setAddressError("");
+    if (electricity.provider !== "tibber" || !electricity.useTibber) {
+      setAddressError("Välj Tibber som elbolag och aktivera API-import.");
+      return;
+    }
     if (!electricity.tibberToken) {
       setAddressError("Lägg in din Tibber-token först.");
       return;
@@ -1468,6 +1944,12 @@ const budgetOutcomeRows = useMemo(() => {
           data.annualConsumption != null
             ? Math.round(Number(data.annualConsumption))
             : prev.consumption,
+        monthlyCost:
+          data.monthlyCost != null ? Number(data.monthlyCost) : prev.monthlyCost,
+        previousMonthlyCost:
+          data.previousMonthlyCost != null
+            ? Number(data.previousMonthlyCost)
+            : prev.previousMonthlyCost,
       }));
       showFeedback("Hämtade Tibber-data ✅");
     } catch (err) {
@@ -1478,9 +1960,182 @@ const budgetOutcomeRows = useMemo(() => {
     }
   };
 
+  const handleTibberTest = async () => {
+    if (!authToken || !currentUser) {
+      setTibberTestState((prev) => ({
+        ...prev,
+        error: "Logga in innan du testar Tibber.",
+        response: null,
+      }));
+      return;
+    }
+    if (!tibberTestState.token.trim()) {
+      setTibberTestState((prev) => ({
+        ...prev,
+        error: "Ange en Tibber-personal access token.",
+        response: null,
+      }));
+      return;
+    }
+    setTibberTestState((prev) => ({
+      ...prev,
+      loading: true,
+      error: "",
+      response: null,
+    }));
+    try {
+      const response = await authFetch(authToken, `${API_BASE_URL}/api/tibber/price`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tibberTestState.token }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || "Kunde inte hämta Tibber-data.");
+      }
+      setTibberTestState((prev) => ({
+        ...prev,
+        response: data,
+        error: "",
+      }));
+    } catch (err) {
+      console.error("Tibber test request failed", err);
+      setTibberTestState((prev) => ({
+        ...prev,
+        error: err.message || "Kunde inte hämta Tibber-data.",
+        response: null,
+      }));
+    } finally {
+      setTibberTestState((prev) => ({ ...prev, loading: false }));
+    }
+  };
+
+  const handleAdoptTibberToken = () => {
+    if (!electricity.tibberToken) {
+      showFeedback("Lägg först in tokenen under Övriga kostnader.");
+      return;
+    }
+    setTibberTestState((prev) => ({
+      ...prev,
+      token: electricity.tibberToken,
+      error: "",
+    }));
+    setElectricity((prev) => ({
+      ...prev,
+      provider: "tibber",
+      useTibber: true,
+    }));
+    showFeedback("Token kopierad till Tibber-testet.");
+  };
+
+  const handlePropertyPreviewFetch = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!propertyInfo.name?.trim()) {
+        if (!silent) {
+          setPropertyPreview((prev) => ({
+            ...prev,
+            error: "Ange adress först.",
+        }));
+      }
+      return;
+    }
+    if (!authToken) {
+      if (!silent) {
+        setPropertyPreview((prev) => ({
+          ...prev,
+          error: "Logga in för att hämta kartan.",
+        }));
+      }
+      return;
+    }
+    setPropertyPreview((prev) => ({
+      ...prev,
+      loading: true,
+      error: "",
+    }));
+    try {
+      const response = await authFetch(
+        authToken,
+        `${API_BASE_URL}/api/place-preview?address=${encodeURIComponent(propertyInfo.name)}`,
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Kunde inte hämta kartbilden.");
+      }
+      const data = await response.json();
+      setPropertyPreview({
+        loading: false,
+        error: "",
+        mapImage: data.mapImage || "",
+        streetImage: data.streetImage || "",
+        address: data.address || propertyInfo.name,
+      });
+      setLastPreviewAddress(data.address || propertyInfo.name);
+      } catch (err) {
+        console.error("Property preview failed", err);
+        setPropertyPreview((prev) => ({
+          ...prev,
+          loading: false,
+          error: silent ? prev.error : err.message || "Kunde inte hämta kartbilden.",
+        }));
+      }
+    },
+    [authToken, propertyInfo.name],
+  );
+
+  useEffect(() => {
+    const query = propertyInfo.name?.trim();
+    if (!authToken || !query || query.length < 5) {
+      return undefined;
+    }
+    if (propertyPreviewTimeout.current) {
+      clearTimeout(propertyPreviewTimeout.current);
+    }
+    propertyPreviewTimeout.current = setTimeout(() => {
+      if (query === lastPreviewAddress) {
+        return;
+      }
+      handlePropertyPreviewFetch({ silent: true });
+    }, 1000);
+    return () => {
+      if (propertyPreviewTimeout.current) {
+        clearTimeout(propertyPreviewTimeout.current);
+        propertyPreviewTimeout.current = null;
+      }
+    };
+  }, [authToken, propertyInfo.name, lastPreviewAddress, handlePropertyPreviewFetch]);
+
   const handlePropertyInfoChange = (event) => {
     const { name, value } = event.target;
     setPropertyInfo((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleAddBuilding = () => {
+    setPropertyInfo((prev) => ({
+      ...prev,
+      buildings: [...(prev.buildings || []), createBuildingEntry()],
+    }));
+  };
+
+  const handleBuildingChange = (id, field, value) => {
+    setPropertyInfo((prev) => ({
+      ...prev,
+      buildings: (prev.buildings || []).map((building) =>
+        building.id === id ? { ...building, [field]: value } : building,
+      ),
+    }));
+  };
+
+  const handleRemoveBuilding = (id) => {
+    setPropertyInfo((prev) => ({
+      ...prev,
+      buildings: (prev.buildings || []).filter((building) => building.id !== id),
+    }));
+  };
+
+  const handleBroadbandChange = (event) => {
+    const { name, value } = event.target;
+    setBroadband((prev) => ({ ...prev, [name]: value }));
   };
 
   const handlePropertyInsuranceChange = (event) => {
@@ -1660,7 +2315,11 @@ const budgetOutcomeRows = useMemo(() => {
       setCostCategories(payload.costCategories);
     }
     if (payload.propertyInfo) {
-      setPropertyInfo((prev) => ({ ...prev, ...payload.propertyInfo }));
+      setPropertyInfo((prev) => ({
+        ...prev,
+        ...payload.propertyInfo,
+        buildings: normalizeBuildings(payload.propertyInfo.buildings ?? prev.buildings),
+      }));
       if (payload.showPropertyForm !== undefined) {
         setShowPropertyForm(Boolean(payload.showPropertyForm));
       } else if (payload.propertyInfo.value || payload.propertyInfo.name) {
@@ -1707,6 +2366,12 @@ const budgetOutcomeRows = useMemo(() => {
     if (payload.propertyInsurance) {
       setPropertyInsurance((prev) => ({ ...prev, ...payload.propertyInsurance }));
     }
+    if (payload.broadband) {
+      setBroadband((prev) => ({ ...prev, ...payload.broadband }));
+    }
+    if (payload.showBroadbandForm !== undefined) {
+      setShowBroadbandForm(Boolean(payload.showBroadbandForm));
+    }
     const snapshot = JSON.stringify(payload);
     lastSavedProfileSnapshot.current = snapshot;
   };
@@ -1719,15 +2384,17 @@ const budgetOutcomeRows = useMemo(() => {
     electricity,
     propertyInfo,
     propertyInsurance,
+    broadband,
     costCategories,
     futureAmortizationPercent,
     taxAdjustmentEnabled,
     savingsForecastYears,
     outcomeMonth,
-  outcomeEntries,
-  outcomeExtras,
-  showPropertyForm,
-});
+    outcomeEntries,
+    outcomeExtras,
+    showPropertyForm,
+    showBroadbandForm,
+  });
 
 const authFetch = (token, url, options = {}) => {
   const headers = options.headers ? { ...options.headers } : {};
@@ -1842,6 +2509,7 @@ const refreshProfiles = useCallback(async () => {
       return;
     }
     const payload = buildProfilePayload();
+    const snapshot = JSON.stringify(payload);
     try {
       const method = activeProfileId ? "PUT" : "POST";
       const url = activeProfileId
@@ -1859,6 +2527,7 @@ const refreshProfiles = useCallback(async () => {
       const saved = await response.json();
       setActiveProfileId(saved.id);
       showFeedback("Profil sparad ✅");
+      lastSavedProfileSnapshot.current = snapshot;
       refreshProfiles();
     } catch (err) {
       console.error("Failed to save profile", err);
@@ -1888,7 +2557,7 @@ const refreshProfiles = useCallback(async () => {
         const url = activeProfileId
           ? `${API_BASE_URL}/api/profiles/${activeProfileId}`
           : `${API_BASE_URL}/api/profiles`;
-        const response = await fetch(url, {
+        const response = await authFetch(authToken, url, {
           method,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, payload }),
@@ -1922,6 +2591,7 @@ const refreshProfiles = useCallback(async () => {
     electricity,
     propertyInfo,
     propertyInsurance,
+    broadband,
     costCategories,
     futureAmortizationPercent,
     taxAdjustmentEnabled,
@@ -1933,14 +2603,9 @@ const refreshProfiles = useCallback(async () => {
     currentUser,
     activeProfileId,
     showPropertyForm,
+    showBroadbandForm,
     refreshProfiles,
   ]);
-
-  useEffect(() => {
-    if (!showPropertyForm && (propertyInfo.name?.trim() || propertyInfo.value)) {
-      setShowPropertyForm(true);
-    }
-  }, [propertyInfo.name, propertyInfo.value, showPropertyForm]);
 
   const handleDeleteProfile = async () => {
     if (!activeProfileId) {
@@ -2126,6 +2791,16 @@ const refreshProfiles = useCallback(async () => {
     setAddressSessionToken(
       crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2),
     );
+    if (prediction.streetImage) {
+      setPropertyPreview({
+        loading: false,
+        error: "",
+        mapImage: prediction.streetImage,
+        streetImage: prediction.streetImage,
+        address: prediction.description,
+      });
+      setLastPreviewAddress(prediction.description);
+    }
   };
 
   useEffect(() => {
@@ -2368,11 +3043,15 @@ const refreshProfiles = useCallback(async () => {
     }
     showFeedback("Kategori borttagen.");
   };
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  };
+  const setupFieldsDisabled = settingsStatus.adminConfigured && !setupUnlocked;
 
   return (
-    <div className="app">
+    <div className={`app ${isDarkMode ? "dark" : ""}`}>
       <header className="hero">
-        <div>
+        <div className="hero-copy">
           <p className="eyebrow">Budgetapp – hushållsekonomi</p>
           <h1>Bolånekalkyl</h1>
           <p className="lead">
@@ -2380,21 +3059,161 @@ const refreshProfiles = useCallback(async () => {
             månadskostnaden jämfört med din nettolön per månad.
           </p>
         </div>
-        <div className="user-chip">
-          {currentUser ? (
-            <>
-              <span>Inloggad som {currentUser.username}</span>
-              <button type="button" className="link-button" onClick={handleLogout}>
-                Logga ut
-              </button>
-            </>
-          ) : (
-            <span>Inte inloggad</span>
-          )}
+        <div className="hero-actions">
+          <div className="user-chip">
+            {currentUser ? (
+              <>
+                <span>Inloggad som {currentUser.username}</span>
+                <button type="button" className="link-button" onClick={handleLogout}>
+                  Logga ut
+                </button>
+              </>
+            ) : (
+              <span>Inte inloggad</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              setSetupError("");
+              setSetupSuccess("");
+              setSetupUnlockError("");
+              setSetupUnlocking(false);
+              setSetupUnlocked(!settingsStatus.adminConfigured);
+              if (!settingsStatus.adminConfigured) {
+                setSetupAdminKey("");
+              }
+              setShowSetupPrompt(true);
+            }}
+            disabled={needsInitialSetup}
+          >
+            Serverinställningar
+          </button>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-pressed={isDarkMode}
+            onClick={toggleTheme}
+          >
+            {isDarkMode ? "Ljust läge" : "Mörkt läge"}
+          </button>
         </div>
       </header>
       <main className="content">
-        {!currentUser ? (
+        {showSetupPrompt ? (
+          <section className="setup-card">
+            <div>
+              <p className="eyebrow subtle">Initial konfiguration</p>
+              <h2>Sätt adminlösenord & Google-uppgifter</h2>
+              <p>
+                Första gången du startar servern behöver du välja ett adminlösenord och lägga in din
+                Google Places API-nyckel. Här kan du även spara din Google OAuth-klient för att
+                möjliggöra inloggning via Google-konto. Alla värden sparas i databasen i stället för
+                i `.env`-filer.
+              </p>
+            </div>
+            {needsInitialSetup && (
+              <p className="setup-warning">
+                Både adminlösen och Google-nyckel krävs innan du kan använda appen.
+              </p>
+            )}
+            {settingsStatus.adminConfigured && (
+              <div className={`setup-lock-panel ${setupUnlocked ? "unlocked" : ""}`}>
+                <div>
+                  <p className="eyebrow subtle">Adminåtkomst</p>
+                  <h4>{setupUnlocked ? "Upplåst" : "Lås upp serverinställningarna"}</h4>
+                  <p>
+                    Ange adminlösenordet för att kunna uppdatera Google-nycklar och andra
+                    serverinställningar. Lösenordet skickas krypterat till servern och används bara
+                    för att verifiera dig.
+                  </p>
+                </div>
+                <div className="setup-lock-actions">
+                  <input
+                    type="password"
+                    placeholder="Adminlösenord"
+                    value={setupAdminKey}
+                    onChange={(event) => {
+                      setSetupAdminKey(event.target.value);
+                      setSetupUnlockError("");
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={handleSetupUnlock}
+                    disabled={setupUnlocking || !setupAdminKey}
+                  >
+                    {setupUnlocking ? "Verifierar..." : setupUnlocked ? "Verifiera igen" : "Lås upp"}
+                  </button>
+                </div>
+                {setupUnlockError && <p className="error">{setupUnlockError}</p>}
+              </div>
+            )}
+            <fieldset className="setup-grid" disabled={setupFieldsDisabled}>
+              <label>
+                <span>Nytt adminlösenord</span>
+                <input
+                  type="password"
+                  name="adminPassword"
+                  value={setupValues.adminPassword}
+                  onChange={handleSetupInputChange}
+                  placeholder="Minst 8 tecken"
+                />
+              </label>
+              <label>
+                <span>Google Maps Places API-nyckel</span>
+                <input
+                  type="text"
+                  name="googleMapsKey"
+                  value={setupValues.googleMapsKey}
+                  onChange={handleSetupInputChange}
+                  placeholder="AIza..."
+                />
+              </label>
+              <label>
+                <span>Google OAuth Client ID (för Google-inloggning)</span>
+                <input
+                  type="text"
+                  name="googleClientId"
+                  value={setupValues.googleClientId}
+                  onChange={handleSetupInputChange}
+                  placeholder="1234567890-xxxx.apps.googleusercontent.com"
+                />
+              </label>
+            </fieldset>
+            <div className="setup-actions">
+              <button
+                type="button"
+                className="ghost"
+                onClick={handleSubmitSetup}
+                disabled={setupSubmitting}
+              >
+                {setupSubmitting ? "Sparar..." : "Spara inställningar"}
+              </button>
+              {!needsInitialSetup && (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    setShowSetupPrompt(false);
+                    setSetupError("");
+                    setSetupSuccess("");
+                    setSetupUnlockError("");
+                    setSetupUnlocking(false);
+                    setSetupUnlocked(!settingsStatus.adminConfigured);
+                    setSetupAdminKey("");
+                  }}
+                >
+                  Stäng
+                </button>
+              )}
+            </div>
+            {setupError && <p className="error setup-message">{setupError}</p>}
+            {setupSuccess && <p className="success setup-message">{setupSuccess}</p>}
+          </section>
+        ) : !currentUser ? (
           <div className="auth-panel">
             <div>
               <p className="eyebrow subtle">Logga in eller skapa konto</p>
@@ -2426,6 +3245,18 @@ const refreshProfiles = useCallback(async () => {
                 </button>
               </div>
               {authError && <p className="error">{authError}</p>}
+              {settingsStatus.googleLoginConfigured ? (
+                <>
+                  <div className="auth-oauth-divider">
+                    <span>Eller</span>
+                  </div>
+                  <div className="google-signin-container">
+                    <div ref={googleButtonRef} />
+                  </div>
+                </>
+              ) : (
+                <p className="field-note">Google-inloggning aktiveras när en OAuth-klient har lagts in.</p>
+              )}
             </div>
           </div>
         ) : showOnboarding ? (
@@ -2506,27 +3337,48 @@ const refreshProfiles = useCallback(async () => {
                       addressResults.map((prediction) => (
                         <li key={prediction.place_id}>
                           <button type="button" onClick={() => handleSelectAddress(prediction)}>
-                            {prediction.description}
+                            <div className="address-result-content">
+                              {prediction.streetImage && (
+                                <img src={prediction.streetImage} alt="Street preview" />
+                              )}
+                              <span>{prediction.description}</span>
+                            </div>
                           </button>
                         </li>
                       ))}
                   </ul>
-                  <label>
-                    <span>Värdering (kr)</span>
-                    <input
-                      type="number"
-                      min="0"
-                      name="value"
-                      value={propertyInfo.value}
-                      onChange={(event) => {
-                        setShowPropertyForm(true);
-                        handlePropertyInfoChange(event);
-                      }}
-                      placeholder="t.ex. 5 000 000"
-                    />
-                  </label>
-                </div>
-              )}
+                <label>
+                  <span>Värdering (kr)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    name="value"
+                    value={propertyInfo.value}
+                    onChange={(event) => {
+                      setShowPropertyForm(true);
+                      handlePropertyInfoChange(event);
+                    }}
+                    placeholder="t.ex. 5 000 000"
+                  />
+                </label>
+                {(propertyPreview.mapImage || propertyPreview.streetImage) && (
+                  <div className="property-preview-images onboarding-preview">
+                    {propertyPreview.mapImage && (
+                      <div>
+                        <span>Karta ({propertyPreview.address || propertyInfo.name})</span>
+                        <img src={propertyPreview.mapImage} alt="Kartbild" />
+                      </div>
+                    )}
+                    {propertyPreview.streetImage && (
+                      <div>
+                        <span>Street View</span>
+                        <img src={propertyPreview.streetImage} alt="Street View" />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
               <div className="onboarding-actions">
                 <button
                   type="button"
@@ -2646,6 +3498,11 @@ const refreshProfiles = useCallback(async () => {
               )}
             </div>
         <div className="top-tabs">
+          <div className="tabs-copy">
+            <p className="tab-eyebrow">Resultat & scenarier</p>
+            <h2>Se kalkylen</h2>
+            <p>Växla mellan översikt, detaljer och prognos. Lägg till egna flikar för att jämföra scenarier.</p>
+          </div>
           <div className="tab-buttons">
             {tabs.map((tab) => {
               const disabled = tab.requiresResult && !result?.totals;
@@ -2834,115 +3691,444 @@ const refreshProfiles = useCallback(async () => {
                 <h2>Fastighetsinformation</h2>
                 <p>Ange bostadens värde för att se belåningsgrad och låneutrymme.</p>
               </div>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setShowPropertyForm((prev) => !prev)}
-              >
-                {showPropertyForm ? "Dölj fastighet" : "Lägg till fastighet"}
-              </button>
+              <div className="property-header-actions">
+                {hasPropertyDetails ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setShowPropertyForm((prev) => !prev)}
+                  >
+                    {showPropertyForm ? "Dölj redigering" : "Redigera fastighet"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setShowPropertyForm(true)}
+                    disabled={showPropertyForm}
+                  >
+                    Lägg till fastighet
+                  </button>
+                )}
+              </div>
             </div>
               {showPropertyForm ? (
                 <>
-                  <div className="property-grid">
-                    <label>
-                      <span>Beskrivning / adress</span>
+                <div className="property-grid">
+                  <label>
+                    <span>Beskrivning / adress</span>
                     <input
                       type="text"
-                      name="name"
-                      value={propertyInfo.name}
-                      onChange={handlePropertyInfoChange}
-                      placeholder="t.ex. Villa Solrosen"
-                    />
-                  </label>
-                  <label>
-                    <span>Värdering (kr)</span>
-                    <input
-                      type="number"
-                      min="0"
-                      name="value"
-                      value={propertyInfo.value}
-                      onChange={handlePropertyInfoChange}
-                      placeholder="t.ex. 5 000 000"
-                    />
-                    {propertyValuePreview && (
-                      <span className="input-preview">{propertyValuePreview}</span>
+                        name="name"
+                        value={propertyInfo.name}
+                        onChange={(event) => {
+                          handlePropertyInfoChange(event);
+                        }}
+                        placeholder="t.ex. Villa Solrosen"
+                      />
+                    </label>
+                    <label>
+                      <span>Värdering (kr)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        name="value"
+                        value={propertyInfo.value}
+                        onChange={handlePropertyInfoChange}
+                        placeholder="t.ex. 5 000 000"
+                      />
+                      {propertyValuePreview && (
+                        <span className="input-preview">{propertyValuePreview}</span>
+                      )}
+                    </label>
+                    <label>
+                      <span>Fastighetsbeteckning</span>
+                      <input
+                        type="text"
+                        name="designation"
+                        value={propertyInfo.designation}
+                        onChange={handlePropertyInfoChange}
+                        placeholder="t.ex. Solrosen 5:23"
+                      />
+                    </label>
+                    <label>
+                      <span>Boyta (kvm)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        name="areaSqm"
+                        value={propertyInfo.areaSqm}
+                        onChange={handlePropertyInfoChange}
+                        placeholder="t.ex. 145"
+                      />
+                    </label>
+                    <label>
+                      <span>Övriga byggnader</span>
+                      <textarea
+                        name="buildings"
+                        value={propertyInfo.buildings}
+                        onChange={handlePropertyInfoChange}
+                        placeholder="t.ex. garage, friggebod, förråd"
+                      />
+                    </label>
+                  </div>
+                  <div className="property-buildings">
+                    <div className="property-buildings-header">
+                      <div>
+                        <h4>Övriga byggnader</h4>
+                        <p>Lägg till garage, Attefallshus eller andra byggnader kopplade till fastigheten.</p>
+                      </div>
+                      <button type="button" className="ghost" onClick={handleAddBuilding}>
+                        Lägg till byggnad
+                      </button>
+                    </div>
+                    {propertyInfo.buildings && propertyInfo.buildings.length > 0 ? (
+                      <ul className="building-list">
+                        {propertyInfo.buildings.map((building) => {
+                          const typeConfig = BUILDING_TYPES.find((type) => type.id === building.type);
+                          const requiresArea = Boolean(typeConfig?.requiresArea);
+                          return (
+                            <li key={building.id} className="building-row">
+                              <label>
+                                <span>Typ</span>
+                                <select
+                                  value={building.type}
+                                  onChange={(event) =>
+                                    handleBuildingChange(building.id, "type", event.target.value)
+                                  }
+                                >
+                                  <option value="">Välj typ</option>
+                                  {BUILDING_TYPES.map((type) => (
+                                    <option key={`${building.id}-${type.id}`} value={type.id}>
+                                      {type.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                <span>Yta (kvm)</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={building.area}
+                                  onChange={(event) =>
+                                    handleBuildingChange(building.id, "area", event.target.value)
+                                  }
+                                  placeholder={requiresArea ? "Obligatoriskt" : "Valfritt"}
+                                />
+                                {requiresArea && !building.area && (
+                                  <span className="field-note warning">Ange yta för denna byggnad.</span>
+                                )}
+                              </label>
+                              <label>
+                                <span>Beskrivning / anteckningar</span>
+                                <textarea
+                                  value={building.notes}
+                                  onChange={(event) =>
+                                    handleBuildingChange(building.id, "notes", event.target.value)
+                                  }
+                                  placeholder="t.ex. uppvärmning, användning, skick"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                className="link-button"
+                                onClick={() => handleRemoveBuilding(building.id)}
+                              >
+                                Ta bort byggnad
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="field-note">Inga extra byggnader tillagda ännu.</p>
                     )}
-                  </label>
                   </div>
-                <div className="electricity-card property-electricity">
+              <div className="address-preview-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handlePropertyPreviewFetch}
+                  disabled={propertyPreview.loading || !propertyInfo.name?.trim()}
+                >
+                  {propertyPreview.loading ? "Hämtar..." : "Visa karta & Street View"}
+                </button>
+                {propertyPreview.error && (
+                  <span className="error inline">{propertyPreview.error}</span>
+                )}
+              </div>
+              {(propertyPreview.mapImage || propertyPreview.streetImage) && (
+                <div className="property-preview-images">
+                  {propertyPreview.mapImage && (
+                    <div>
+                      <span>Karta ({propertyPreview.address || propertyInfo.name})</span>
+                      <img src={propertyPreview.mapImage} alt="Kartbild" />
+                    </div>
+                  )}
+                  {propertyPreview.streetImage && (
+                    <div>
+                      <span>Street View</span>
+                      <img src={propertyPreview.streetImage} alt="Street View" />
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="broadband-card">
+                <div className="property-buildings-header">
                   <div>
-                    <h4>Elförbrukning (kopplad till fastigheten)</h4>
-                    <p>Ange årsförbrukning, snittpris eller hämta från Tibber.</p>
+                    <h4>Bredband</h4>
+                    <p>Ange vilket bredband du har i bostaden. Kostnaden räknas in i budgeten.</p>
                   </div>
-                  <div className="electricity-inputs">
+                  <button type="button" className="ghost" onClick={() => setShowBroadbandForm((prev) => !prev)}>
+                    {showBroadbandForm ? "Dölj bredband" : "Lägg till bredband"}
+                  </button>
+                </div>
+                {showBroadbandForm ? (
+                  <div className="broadband-grid">
                     <label>
-                      <span>Årsförbrukning (kWh / år)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        name="consumption"
-                        value={electricity.consumption}
-                        onChange={handleElectricityChange}
-                        placeholder="t.ex. 250"
-                      />
-                    </label>
-                    <label>
-                      <span>Snittpris (kr / kWh)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        name="price"
-                        value={electricity.price}
-                        onChange={handleElectricityChange}
-                        placeholder="t.ex. 1.5"
-                      />
-                    </label>
-                    <label>
-                      <span>Elhandelsbolag</span>
+                      <span>Leverantör</span>
                       <input
                         type="text"
                         name="provider"
-                        value={electricity.provider}
-                        onChange={handleElectricityChange}
-                        placeholder="t.ex. Tibber"
+                        value={broadband.provider}
+                        onChange={handleBroadbandChange}
+                        placeholder="t.ex. Telia"
                       />
                     </label>
                     <label>
-                      <span>El-nätsleverantör</span>
+                      <span>Anslutning</span>
+                      <select name="connectionType" value={broadband.connectionType} onChange={handleBroadbandChange}>
+                        <option value="">Välj typ</option>
+                        <option value="fiber">Fiber</option>
+                        <option value="dsl">DSL</option>
+                        <option value="coax">Coax / kabel-tv</option>
+                        <option value="4g">4G / 5G</option>
+                        <option value="other">Annat</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Hastighet ner (Mbit/s)</span>
                       <input
-                        type="text"
-                        name="distributor"
-                        value={electricity.distributor}
-                        onChange={handleElectricityChange}
-                        placeholder="t.ex. Vattenfall"
+                        type="number"
+                        min="0"
+                        name="download"
+                        value={broadband.download}
+                        onChange={handleBroadbandChange}
+                        placeholder="t.ex. 1000"
                       />
                     </label>
                     <label>
-                      <span>Tibber API-nyckel (valfritt)</span>
+                      <span>Hastighet upp (Mbit/s)</span>
                       <input
-                        type="password"
-                        name="tibberToken"
-                        value={electricity.tibberToken}
-                        onChange={handleElectricityChange}
-                        placeholder="Klistra in din Tibber-token"
+                        type="number"
+                        min="0"
+                        name="upload"
+                        value={broadband.upload}
+                        onChange={handleBroadbandChange}
+                        placeholder="t.ex. 1000"
                       />
                     </label>
-                    <div className="electricity-summary">
-                      <span>Uträknad elkostnad</span>
-                      <strong>{SEK.format(electricityTotals.monthlyCost)} / mån</strong>
-                      <span>
-                        ≈ {NUMBER.format(electricityTotals.monthlyKwh || 0)} kWh per månad
+                    <label>
+                      <span>Kostnad (kr)</span>
+                      <div className="broadband-cost">
+                        <input
+                          type="number"
+                          min="0"
+                          name="cost"
+                          value={broadband.cost}
+                          onChange={handleBroadbandChange}
+                          placeholder="t.ex. 399"
+                        />
+                        <select name="frequency" value={broadband.frequency} onChange={handleBroadbandChange}>
+                          <option value="monthly">per månad</option>
+                          <option value="yearly">per år</option>
+                        </select>
+                      </div>
+                    </label>
+                  </div>
+                ) : broadband.provider ? (
+                  <div className="broadband-summary">
+                    <p>
+                      {broadband.provider} · {broadband.connectionType || "Okänd anslutning"} ·{" "}
+                      {broadband.download && `${NUMBER.format(Number(broadband.download))} Mbit`}{" "}
+                      {broadband.cost && `– ${SEK.format(broadbandMonthly)} / mån`}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="field-note">Inget bredband registrerat.</p>
+                )}
+              </div>
+              <div className="broadband-summary-card">
+                {hasBroadbandData ? (
+                  <div className="broadband-summary-grid">
+                    <div>
+                      <p className="eyebrow subtle">Leverantör & anslutning</p>
+                      <strong>{broadband.provider || "Inte angivet"}</strong>
+                      <span className="subtle">{broadbandConnectionLabel}</span>
+                    </div>
+                    <div>
+                      <p className="eyebrow subtle">Hastighet</p>
+                      <strong>
+                        {broadbandDownloadText || broadbandUploadText
+                          ? [broadbandDownloadText, broadbandUploadText].filter(Boolean).join(" · ")
+                          : "Inte angivet"}
+                      </strong>
+                      {(broadbandDownloadText || broadbandUploadText) && (
+                        <span className="subtle">Ner/upphastighet enligt vald plan</span>
+                      )}
+                    </div>
+                    <div>
+                      <p className="eyebrow subtle">Kostnad</p>
+                      <strong>{broadbandMonthly > 0 ? SEK.format(broadbandMonthly) : "Inte angivet"}</strong>
+                      <span className="subtle">
+                        {broadbandAnnual > 0 ? `${SEK.format(broadbandAnnual)} / år` : "Fyll i kostnad för att se årsvärde"}
                       </span>
                     </div>
                   </div>
-                  <div className="electricity-actions">
-                    <button type="button" className="ghost" onClick={handleTibberSync} disabled={!electricity.tibberToken}>
-                      Hämta från Tibber
-                    </button>
+                ) : (
+                  <p className="field-note">Lägg till bredband för att se en sammanställning av kostnad och hastighet.</p>
+                )}
+              </div>
+              <div className="electricity-card property-electricity">
+                  <div>
+                    <h4>Elförbrukning (kopplad till fastigheten)</h4>
+                    <p>Välj elbolag, fyll i manuellt eller hämta uppgifter via Tibber.</p>
                   </div>
-                </div>
+                  <ol className="electricity-steps">
+                    <li>
+                      <div>
+                        <strong>1. Välj elhandelsbolag</strong>
+                        <p>Bestämmer nästa steg. Tibber ger extra API-stöd.</p>
+                      </div>
+                      <div className="electricity-inputs">
+                        <label>
+                          <span>Elhandelsbolag</span>
+                          <select
+                            name="provider"
+                            value={electricity.provider}
+                            onChange={handleElectricityChange}
+                          >
+                            <option value="">Välj leverantör</option>
+                            <option value="tibber">Tibber</option>
+                            <option value="god-el">GodEl</option>
+                            <option value="vattenfall">Vattenfall</option>
+                            <option value="eon">E.ON</option>
+                            <option value="other">Annat bolag</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>El-nätsleverantör</span>
+                          <input
+                            type="text"
+                            name="distributor"
+                            value={electricity.distributor}
+                            onChange={handleElectricityChange}
+                            placeholder="t.ex. Vattenfall"
+                          />
+                        </label>
+                      </div>
+                    </li>
+                    {electricity.provider === "tibber" && (
+                      <li>
+                        <div>
+                          <strong>2. Vill du använda Tibber API?</strong>
+                          <p>Använd din personal access token så hämtar vi pris och förbrukning.</p>
+                        </div>
+                        <label className="tibber-toggle">
+                          <input
+                            type="checkbox"
+                            name="useTibber"
+                            checked={Boolean(electricity.useTibber)}
+                            onChange={handleElectricityChange}
+                          />
+                          Ja, hämta uppgifter via Tibber
+                        </label>
+                        {electricity.useTibber && (
+                          <div className="electricity-inputs">
+                            <label>
+                              <span>Tibber API-nyckel</span>
+                              <input
+                                type="password"
+                                name="tibberToken"
+                                value={electricity.tibberToken}
+                                onChange={handleElectricityChange}
+                                placeholder="Klistra in din Tibber-token"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={handleTibberSync}
+                              disabled={!electricity.tibberToken}
+                            >
+                              Hämta från Tibber
+                            </button>
+                            <span className="field-note">
+                              Vi läser snittpris och förbrukning för att göra en komplett budget.
+                            </span>
+                          </div>
+                        )}
+                      </li>
+                    )}
+                    {(electricity.provider !== "tibber" || !electricity.useTibber) && (
+                      <li>
+                        <div>
+                          <strong>2. Ange uppgifter manuellt</strong>
+                          <p>Fyll i årsförbrukning och snittpris så räknar vi ut månadsbudgeten.</p>
+                        </div>
+                        <div className="electricity-inputs">
+                          <label>
+                            <span>Årsförbrukning (kWh / år)</span>
+                            <input
+                              type="number"
+                              min="0"
+                              name="consumption"
+                              value={electricity.consumption}
+                              onChange={handleElectricityChange}
+                              placeholder="t.ex. 250"
+                            />
+                          </label>
+                          <label>
+                            <span>Snittpris (kr / kWh)</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              name="price"
+                              value={electricity.price}
+                              onChange={handleElectricityChange}
+                              placeholder="t.ex. 1.5"
+                            />
+                          </label>
+                        </div>
+                      </li>
+                    )}
+                  </ol>
+                  <div className="electricity-summary">
+                    <span>Uträknad elkostnad</span>
+                    <strong>{SEK.format(electricityTotals.monthlyCost)} / mån</strong>
+                    <span>
+                      ≈ {NUMBER.format(electricityTotals.monthlyKwh || 0)} kWh per månad
+                    </span>
+                  </div>
+                {(electricity.monthlyCost != null || electricity.previousMonthlyCost != null) && (
+                  <div className="tibber-cost-hints">
+                    {electricity.monthlyCost != null && (
+                      <div>
+                        <span>Kostnad denna månad</span>
+                        <strong>{SEK.format(electricity.monthlyCost)}</strong>
+                      </div>
+                    )}
+                    {electricity.previousMonthlyCost != null && (
+                      <div>
+                        <span>Föregående månad</span>
+                        <strong>{SEK.format(electricity.previousMonthlyCost)}</strong>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
                   {hasPropertyValue && activeLoanPrincipal > 0 && (
                     <div className="property-summary">
                       <div>
@@ -2963,8 +4149,76 @@ const refreshProfiles = useCallback(async () => {
                   </div>
                 )}
               </>
+            ) : hasPropertyDetails ? (
+              <div className="property-summary-card">
+                <div>
+                  <p>Fastighet</p>
+                  <strong>{propertyInfo.name || "Ej namngiven"}</strong>
+                </div>
+                <div>
+                  <p>Värde</p>
+                  <strong>
+                    {propertyInfo.value ? SEK.format(Number(propertyInfo.value)) : "—"}
+                  </strong>
+                </div>
+                {propertyInfo.areaSqm && (
+                  <div>
+                    <p>Boyta</p>
+                    <strong>{NUMBER.format(Number(propertyInfo.areaSqm))} kvm</strong>
+                  </div>
+                )}
+                {propertyInfo.designation && (
+                  <div>
+                    <p>Beteckning</p>
+                    <strong>{propertyInfo.designation}</strong>
+                  </div>
+                )}
+                <button type="button" className="link-button" onClick={() => setShowPropertyForm(true)}>
+                  Redigera uppgifterna
+                </button>
+                {propertyInfo.buildings && propertyInfo.buildings.length > 0 && (
+                  <div className="property-buildings-summary">
+                    <p>Övriga byggnader</p>
+                    <ul>
+                      {propertyInfo.buildings.map((building) => {
+                        const typeLabel =
+                          BUILDING_TYPES.find((type) => type.id === building.type)?.label ||
+                          building.type ||
+                          "Byggnad";
+                        return (
+                          <li key={`summary-${building.id}`}>
+                            <strong>{typeLabel}</strong>
+                            {building.area && (
+                              <span>{` · ${NUMBER.format(Number(building.area))} kvm`}</span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
             ) : (
               <p className="placeholder">Lägg till fastighet om du vill visa belåningsgrad.</p>
+            )}
+            {!showPropertyForm && (propertyPreview.mapImage || propertyPreview.streetImage) && (
+              <div className="property-preview-images collapsed">
+                {propertyPreview.mapImage && (
+                  <div>
+                    <span>Karta ({propertyPreview.address || propertyInfo.name})</span>
+                    <img src={propertyPreview.mapImage} alt="Kartbild" />
+                  </div>
+                )}
+                {propertyPreview.streetImage && (
+                  <div>
+                    <span>Street View</span>
+                    <img src={propertyPreview.streetImage} alt="Street View" />
+                  </div>
+                )}
+                <button type="button" className="link-button" onClick={handlePropertyPreviewFetch}>
+                  Uppdatera bilder
+                </button>
+              </div>
             )}
             {showPropertyForm && (
               <div className="insurance-block">
@@ -3006,6 +4260,46 @@ const refreshProfiles = useCallback(async () => {
                 <p className="metric-note">
                   Vi sparar försäkringen kopplad till denna fastighet och kan senare jämföra mot genomsnitt.
                 </p>
+                <div className="insurance-summary-card">
+                  <div>
+                    <p>Försäkringskostnad</p>
+                    <strong>{SEK.format(propertyInsuranceMonthly)} / mån</strong>
+                    <span>≈ {SEK.format(propertyInsuranceMonthly * 12)} per år</span>
+                  </div>
+                  <div className="insurance-description">
+                    <p>Du försäkrar:</p>
+                    <ul>
+                      <li>
+                        Fastighet: {propertyInfo.name || "ej namngiven"}{" "}
+                        {propertyInfo.areaSqm
+                          ? `(${NUMBER.format(Number(propertyInfo.areaSqm))} kvm)`
+                          : ""}
+                      </li>
+                      {propertyInfo.designation && (
+                        <li>Beteckning: {propertyInfo.designation}</li>
+                      )}
+                      {propertyInfo.buildings && propertyInfo.buildings.length > 0 ? (
+                        <li>
+                          Övriga byggnader:{" "}
+                          {propertyInfo.buildings
+                            .map((building) => {
+                              const label =
+                                BUILDING_TYPES.find((type) => type.id === building.type)?.label ||
+                                building.type ||
+                                "Byggnad";
+                              const area = building.area
+                                ? ` (${NUMBER.format(Number(building.area))} kvm)`
+                                : "";
+                              return `${label}${area}`;
+                            })
+                            .join(", ")}
+                        </li>
+                      ) : (
+                        <li>Inga extra byggnader registrerade.</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
               </div>
             )}
           </section>
@@ -4256,6 +5550,122 @@ const refreshProfiles = useCallback(async () => {
             />
           </section>
         ) : null,
+      )}
+      {activeTab === "tibber" && (
+        <section className="tibber-dev-panel">
+          <div className="tibber-header">
+            <div>
+              <p className="eyebrow subtle">Tibber modul</p>
+              <h2>Testa Tibber-integration</h2>
+              <p>
+                Utveckla mot Tibber utan att påverka budgeten. Ange en personal access token och kör
+                samma GraphQL-fråga som kalkylen använder när du importerar elpris och förbrukning.
+              </p>
+            </div>
+            <div className="tibber-actions">
+              <button type="button" className="ghost" onClick={handleAdoptTibberToken}>
+                Använd token från kalkylen
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={handleTibberTest}
+                disabled={tibberTestState.loading}
+              >
+                {tibberTestState.loading ? "Hämtar..." : "Testa mot Tibber"}
+              </button>
+            </div>
+          </div>
+          <div className="tibber-test-grid">
+            <label>
+              <span>Tibber personal access token</span>
+              <input
+                type="text"
+                value={tibberTestState.token}
+                onChange={(event) =>
+                  setTibberTestState((prev) => ({ ...prev, token: event.target.value }))
+                }
+                placeholder="Skapa token under Tibber → Profile → Developer"
+              />
+            </label>
+          </div>
+          {tibberTestState.error && <p className="error">{tibberTestState.error}</p>}
+          {tibberTestState.response && (
+            <div className="tibber-response">
+              <h3>Senaste svar</h3>
+              <div className="tibber-kpis">
+                <div>
+                  <span>Pris just nu</span>
+                  <strong>
+                    {tibberTestState.response.price != null
+                      ? `${tibberTestState.response.price.toFixed(2)} kr/kWh`
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Senaste månadsförbrukning</span>
+                  <strong>
+                    {tibberTestState.response.monthlyConsumption != null
+                      ? `${NUMBER.format(tibberTestState.response.monthlyConsumption)} kWh`
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Årsförbrukning</span>
+                  <strong>
+                    {tibberTestState.response.annualConsumption != null
+                      ? `${NUMBER.format(tibberTestState.response.annualConsumption)} kWh`
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Kostnad denna månad</span>
+                  <strong>
+                    {tibberTestState.response.monthlyCost != null
+                      ? SEK.format(tibberTestState.response.monthlyCost)
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Föregående månad</span>
+                  <strong>
+                    {tibberTestState.response.previousMonthlyCost != null
+                      ? SEK.format(tibberTestState.response.previousMonthlyCost)
+                      : "—"}
+                  </strong>
+                </div>
+              </div>
+              <pre className="code-block">
+                {JSON.stringify(tibberTestState.response, null, 2)}
+              </pre>
+            </div>
+          )}
+          <div className="tibber-info">
+            <div>
+              <h3>GraphQL-frågan</h3>
+              <pre className="code-block">
+{`{
+  viewer {
+    homes {
+      currentSubscription { priceInfo { current { total } } }
+      monthly: consumption(resolution: MONTHLY, first: 12) {
+        nodes { from consumption }
+      }
+    }
+  }
+}`}
+              </pre>
+            </div>
+            <div>
+              <h3>Kom ihåg</h3>
+              <ul>
+                <li>Tokenen behöver läsrättigheter på hemmet.</li>
+                <li>Varje klick gör ett liveanrop mot Tibbers API.</li>
+                <li>Data här påverkar inte budgeten förrän du importerar via kalkylens el-sektion.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
       )}
       {activeTab === "outcome" && (
         <section className="results outcome-panel">

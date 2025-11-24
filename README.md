@@ -35,6 +35,8 @@ En enkel fullstack-applikation byggd med Node.js och React för att räkna ut hu
    npm run dev
    # öppna sedan http://localhost:5173
    ```
+4. **Kör den initiala serverkonfigurationen**  
+   Första gången du öppnar appen visas ett kort där du sätter ett adminlösenord och anger din Google Maps Places API-nyckel. Dessa värden sparas krypterat i SQLite-databasen och behöver därför inte ligga i `.env` eller versionshanteringen.
 
 > Obs! Backend tillåter CORS så att utvecklingsservern för React kan prata med API:t direkt.
 
@@ -72,11 +74,25 @@ Svar:
 
 > Övriga kostnadsposter hanteras i frontend, där du kan lägga till månads-, kvartals- eller årsavgifter samt elförbrukning (kWh per år + snittpris) som automatiskt räknas om till vad du behöver lägga undan varje månad.
 
+### Serverinställningar
+
+- `GET /api/settings/status` – används av klienten för att avgöra om adminlösenord och Google Maps-nyckel redan är satta (`{ adminConfigured: boolean, googleKeyConfigured: boolean }`).
+- `POST /api/settings/initialize` – sätt/uppdatera adminlösenord och Google Maps Places-nyckel.  
+  Body:
+  ```json
+  {
+    "adminPassword": "nytt-lösen",
+    "googleMapsKey": "AIza..."
+  }
+  ```
+  * Vid första konfigurationen måste båda fälten anges.
+  * Vid uppdatering anger du det gamla adminlösenordet i headern `X-Admin-Key` och kan därefter byta lösenord och/eller API-nyckel.
+
 ## Teknisk översikt
 
 - **Server**: Express med JSON-API (`server/index.js`).
 - **Klient**: React + Vite (`client/src`) med ett formulär som skickar data till API:t och presenterar resultatet.
-- **Miljövariabler**: `VITE_API_BASE_URL` (frontend) för att peka på rätt backend-URL.
+- **Miljövariabler**: `VITE_API_BASE_URL` (frontend) för att peka på rätt backend-URL. Adminlösenordet och Google Places-nyckeln sätts i stället via `/api/settings/initialize` och sparas i SQLite.
 
 ## Docker
 
