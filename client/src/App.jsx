@@ -485,10 +485,10 @@ function App() {
     setSetupSuccess("");
     setAdminConsoleError("");
     setAdminConsoleVerifying(false);
-    setAdminConsoleUnlocked(false);
+    setAdminConsoleUnlocked(!settingsStatus.adminConfigured);
     setAdminConsoleActiveTab("settings");
     setShowAdminConsole(true);
-  }, []);
+  }, [settingsStatus.adminConfigured]);
   useEffect(() => {
     const storedToken = localStorage.getItem(TOKEN_KEY);
     if (storedToken) {
@@ -1528,7 +1528,10 @@ const budgetOutcomeRows = useMemo(() => {
         };
         setSettingsStatus(status);
         setGoogleClientId(data.googleClientId || "");
-        setAdminConsoleUnlocked(false);
+        setAdminConsoleUnlocked(!status.adminConfigured);
+        if (!status.adminConfigured || !status.googleKeyConfigured) {
+          setShowAdminConsole(true);
+        }
       } catch (err) {
         console.error("Failed to fetch server settings status", err);
       }
@@ -3315,7 +3318,29 @@ useEffect(() => {
             )}
           </section>
         )}
-        {!isAuthenticated ? (
+        {needsInitialSetup ? (
+          <div className="setup-required-card">
+            <div>
+              <p className="eyebrow subtle">Initial setup saknas</p>
+              <h2>Slutför admininställningarna</h2>
+              <p className="setup-note">
+                Lägg in adminlösenord och Google-nycklar innan appen kan användas.
+              </p>
+            </div>
+            <div className="auth-actions">
+              <button type="button" onClick={openAdminConsole}>
+                Öppna admininställningar
+              </button>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => setShowAdminConsole((prev) => !prev)}
+              >
+                {showAdminConsole ? "Dölj panel" : "Visa panel"}
+              </button>
+            </div>
+          </div>
+        ) : !isAuthenticated ? (
           <div className="auth-panel">
             <div>
               <p className="eyebrow subtle">Logga in eller skapa konto</p>
