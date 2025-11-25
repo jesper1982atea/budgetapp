@@ -480,6 +480,15 @@ function App() {
   const lastSubmittedSnapshot = useRef("");
   const lastSavedProfileSnapshot = useRef("");
   const autoSaveTimeout = useRef(null);
+  const openAdminConsole = useCallback(() => {
+    setSetupError("");
+    setSetupSuccess("");
+    setAdminConsoleError("");
+    setAdminConsoleVerifying(false);
+    setAdminConsoleUnlocked(!settingsStatus.adminConfigured);
+    setAdminConsoleActiveTab("settings");
+    setShowAdminConsole(true);
+  }, [settingsStatus.adminConfigured]);
   useEffect(() => {
     const storedToken = localStorage.getItem(TOKEN_KEY);
     if (storedToken) {
@@ -1519,8 +1528,6 @@ const budgetOutcomeRows = useMemo(() => {
         };
         setSettingsStatus(status);
         setGoogleClientId(data.googleClientId || "");
-        const needsConsole = !status.adminConfigured || !status.googleKeyConfigured;
-        setShowAdminConsole(needsConsole);
         setAdminConsoleUnlocked(!status.adminConfigured);
       } catch (err) {
         console.error("Failed to fetch server settings status", err);
@@ -3081,15 +3088,8 @@ useEffect(() => {
           <button
             type="button"
             className="ghost admin-entry"
-            onClick={() => {
-              setSetupError("");
-              setSetupSuccess("");
-              setAdminConsoleError("");
-              setAdminConsoleVerifying(false);
-              setAdminConsoleUnlocked(!settingsStatus.adminConfigured);
-              setAdminConsoleActiveTab("settings");
-              setShowAdminConsole(true);
-            }}
+            onClick={openAdminConsole}
+            hidden={!isAuthenticated}
           >
             <span className="admin-entry-label">Admininställningar</span>
             <small>Google-nycklar & server</small>
@@ -3327,6 +3327,14 @@ useEffect(() => {
                   Slutför admininställningarna eller logga in för att använda kalkylen.
                 </p>
               )}
+              <button
+                type="button"
+                className="link-button"
+                onClick={openAdminConsole}
+                style={{ alignSelf: "flex-start", padding: 0 }}
+              >
+                Admininloggning
+              </button>
               <input
                 type="text"
                 placeholder="Användarnamn"
