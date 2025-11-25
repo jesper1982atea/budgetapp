@@ -28,6 +28,15 @@ const BROADBAND_CONNECTION_LABELS = {
   other: "Annat",
 };
 
+const USER_PROGRESS_FIELDS = [
+  { key: "income", label: "Inkomst" },
+  { key: "loans", label: "Bolån" },
+  { key: "property", label: "Fastighet" },
+  { key: "electricity", label: "El" },
+  { key: "costs", label: "Kostnader" },
+  { key: "savings", label: "Sparande" },
+];
+
 const TAX_TABLES = [
   { id: "29", label: "Tabell 29 (~29% skatt)", rate: 0.29 },
   { id: "30", label: "Tabell 30 (~30% skatt)", rate: 0.3 },
@@ -436,16 +445,17 @@ function App() {
     googleKeyConfigured: true,
     googleLoginConfigured: false,
   });
-  const [showSetupPrompt, setShowSetupPrompt] = useState(false);
+  const [showAdminConsole, setShowAdminConsole] = useState(false);
+  const [adminConsoleKey, setAdminConsoleKey] = useState("");
+  const [adminConsoleUnlocked, setAdminConsoleUnlocked] = useState(false);
+  const [adminConsoleVerifying, setAdminConsoleVerifying] = useState(false);
+  const [adminConsoleError, setAdminConsoleError] = useState("");
+  const [adminConsoleActiveTab, setAdminConsoleActiveTab] = useState("settings");
   const [setupValues, setSetupValues] = useState({
     adminPassword: "",
     googleMapsKey: "",
     googleClientId: "",
   });
-  const [setupAdminKey, setSetupAdminKey] = useState("");
-  const [setupUnlocked, setSetupUnlocked] = useState(false);
-  const [setupUnlockError, setSetupUnlockError] = useState("");
-  const [setupUnlocking, setSetupUnlocking] = useState(false);
   const [setupSubmitting, setSetupSubmitting] = useState(false);
   const [setupError, setSetupError] = useState("");
   const [setupSuccess, setSetupSuccess] = useState("");
@@ -463,9 +473,7 @@ function App() {
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [customTabs, setCustomTabs] = useState([]);
   const [newTabLabel, setNewTabLabel] = useState("");
-  const [adminKey, setAdminKey] = useState("");
   const [adminUsers, setAdminUsers] = useState([]);
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [adminError, setAdminError] = useState("");
   const [adminLoading, setAdminLoading] = useState(false);
   const feedbackTimeout = useRef(null);
@@ -1510,21 +1518,15 @@ const budgetOutcomeRows = useMemo(() => {
         };
         setSettingsStatus(status);
         setGoogleClientId(data.googleClientId || "");
-        setShowSetupPrompt(!status.adminConfigured || !status.googleKeyConfigured);
+        const needsConsole = !status.adminConfigured || !status.googleKeyConfigured;
+        setShowAdminConsole(needsConsole);
+        setAdminConsoleUnlocked(!status.adminConfigured);
       } catch (err) {
         console.error("Failed to fetch server settings status", err);
       }
     };
     fetchSettingsStatus();
   }, []);
-
-  useEffect(() => {
-    if (!settingsStatus.adminConfigured) {
-      setSetupUnlocked(true);
-    } else {
-      setSetupUnlocked(false);
-    }
-  }, [settingsStatus.adminConfigured]);
 
   useEffect(() => {
     if (typeof document === "undefined" || typeof window === "undefined") {
@@ -1780,33 +1782,32 @@ const budgetOutcomeRows = useMemo(() => {
     setSetupValues((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSetupUnlock = async () => {
-    setSetupUnlockError("");
-    if (!setupAdminKey) {
-      setSetupUnlockError("Ange adminlösenordet för servern.");
+  const handleAdminConsoleUnlock = async () => {
+    setAdminConsoleError("");
+    if (!adminConsoleKey) {
+      setAdminConsoleError("Ange adminlösenordet för servern.");
       return;
     }
-    setSetupUnlocking(true);
+    setAdminConsoleVerifying(true);
     try {
       const response = await fetch(`${API_BASE_URL}/api/settings/verify-admin`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-admin-key": setupAdminKey,
+          "x-admin-key": adminConsoleKey,
         },
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data?.error || "Kunde inte verifiera adminlösenordet.");
       }
-      setSetupUnlocked(true);
-      setSetupUnlockError("");
-      setSetupSuccess("Adminlösen verifierat ✅");
+      setAdminConsoleUnlocked(true);
+      setAdminConsoleError("");
     } catch (err) {
-      setSetupUnlockError(err.message || "Fel adminlösen.");
-      setSetupUnlocked(false);
+      setAdminConsoleError(err.message || "Fel adminlösen.");
+      setAdminConsoleUnlocked(false);
     } finally {
-      setSetupUnlocking(false);
+      setAdminConsoleVerifying(false);
     }
   };
 
@@ -1825,12 +1826,12 @@ const budgetOutcomeRows = useMemo(() => {
       setSetupSuccess("");
       return;
     }
-    if (settingsStatus.adminConfigured && !setupUnlocked) {
-      setSetupError("Lås upp serverinställningarna med adminlösen innan du sparar.");
+    if (settingsStatus.adminConfigured && !adminConsoleUnlocked) {
+      setSetupError("Lås upp adminläget med adminlösen innan du sparar.");
       setSetupSuccess("");
       return;
     }
-    if (settingsStatus.adminConfigured && !setupAdminKey) {
+    if (settingsStatus.adminConfigured && !adminConsoleKey) {
       setSetupError("Ange adminlösenordet för att spara.");
       setSetupSuccess("");
       return;
@@ -1842,8 +1843,8 @@ const budgetOutcomeRows = useMemo(() => {
       const headers = {
         "Content-Type": "application/json",
       };
-      if (settingsStatus.adminConfigured && setupAdminKey) {
-        headers["x-admin-key"] = setupAdminKey;
+      if (settingsStatus.adminConfigured && adminConsoleKey) {
+        headers["x-admin-key"] = adminConsoleKey;
       }
       const response = await fetch(`${API_BASE_URL}/api/settings/initialize`, {
         method: "POST",
@@ -1866,7 +1867,7 @@ const budgetOutcomeRows = useMemo(() => {
       };
       setSettingsStatus(nextStatus);
       const needsMore = !nextStatus.adminConfigured || !nextStatus.googleKeyConfigured;
-      setShowSetupPrompt(needsMore);
+      setShowAdminConsole(needsMore);
       if (data.googleClientId) {
         setGoogleClientId(data.googleClientId);
       }
@@ -2643,53 +2644,53 @@ const refreshProfiles = useCallback(async () => {
     }));
   };
 
-  const handleOutcomeExtraChange = (index, field, value) => {
-    setOutcomeExtras((prev) =>
-      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item)),
-    );
-  };
+const handleOutcomeExtraChange = (index, field, value) => {
+  setOutcomeExtras((prev) =>
+    prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item)),
+  );
+};
 
-  const loadAdminUsers = async () => {
-    if (!adminUnlocked || !adminKey) {
-      return;
-    }
-    try {
-      setAdminLoading(true);
-      setAdminError("");
-      const response = await adminFetch(
-        authToken,
-        adminKey,
-        `${API_BASE_URL}/api/admin/users`,
-      );
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error || "Kunde inte hämta användare.");
-      }
-      const rows = await response.json();
-      setAdminUsers(Array.isArray(rows) ? rows : []);
-    } catch (err) {
-      console.error("Admin load users failed", err);
-      setAdminError(err.message || "Kunde inte hämta användare.");
-    } finally {
-      setAdminLoading(false);
-    }
-  };
-
-  const handleAdminUnlock = async () => {
+const loadAdminUsers = useCallback(async () => {
+  if (!adminConsoleUnlocked || !adminConsoleKey) {
+    return;
+  }
+  try {
+    setAdminLoading(true);
     setAdminError("");
-    if (!adminKey) {
-      setAdminError("Ange admin-nyckel.");
-      return;
+    const response = await adminFetch(
+      authToken,
+      adminConsoleKey,
+      `${API_BASE_URL}/api/admin/users`,
+    );
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new Error(data?.error || "Kunde inte hämta användare.");
     }
-    setAdminUnlocked(true);
+    const rows = await response.json();
+    setAdminUsers(Array.isArray(rows) ? rows : []);
+  } catch (err) {
+    console.error("Admin load users failed", err);
+    setAdminError(err.message || "Kunde inte hämta användare.");
+  } finally {
+    setAdminLoading(false);
+  }
+}, [adminConsoleUnlocked, adminConsoleKey, authToken]);
+
+useEffect(() => {
+  if (showAdminConsole && adminConsoleUnlocked && adminConsoleActiveTab === "users") {
     loadAdminUsers();
-  };
+  }
+}, [showAdminConsole, adminConsoleUnlocked, adminConsoleActiveTab, loadAdminUsers]);
 
   const handleAdminDeleteUser = async (userId) => {
+    if (!adminConsoleUnlocked || !adminConsoleKey) {
+      setAdminError("Lås upp administratörsläget först.");
+      return;
+    }
     try {
       const response = await adminFetch(
         authToken,
-        adminKey,
+        adminConsoleKey,
         `${API_BASE_URL}/api/admin/users/${userId}`,
         { method: "DELETE" },
       );
@@ -2706,10 +2707,14 @@ const refreshProfiles = useCallback(async () => {
   };
 
   const handleAdminResetOnboarding = async (userId) => {
+    if (!adminConsoleUnlocked || !adminConsoleKey) {
+      setAdminError("Lås upp administratörsläget först.");
+      return;
+    }
     try {
       const response = await adminFetch(
         authToken,
-        adminKey,
+        adminConsoleKey,
         `${API_BASE_URL}/api/admin/users/${userId}/reset-onboarding`,
         { method: "POST" },
       );
@@ -3046,7 +3051,7 @@ const refreshProfiles = useCallback(async () => {
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
-  const setupFieldsDisabled = settingsStatus.adminConfigured && !setupUnlocked;
+  const setupFieldsDisabled = settingsStatus.adminConfigured && !adminConsoleUnlocked;
 
   return (
     <div className={`app ${isDarkMode ? "dark" : ""}`}>
@@ -3074,21 +3079,19 @@ const refreshProfiles = useCallback(async () => {
           </div>
           <button
             type="button"
-            className="ghost"
+            className="ghost admin-entry"
             onClick={() => {
               setSetupError("");
               setSetupSuccess("");
-              setSetupUnlockError("");
-              setSetupUnlocking(false);
-              setSetupUnlocked(!settingsStatus.adminConfigured);
-              if (!settingsStatus.adminConfigured) {
-                setSetupAdminKey("");
-              }
-              setShowSetupPrompt(true);
+              setAdminConsoleError("");
+              setAdminConsoleVerifying(false);
+              setAdminConsoleUnlocked(!settingsStatus.adminConfigured);
+              setAdminConsoleActiveTab("settings");
+              setShowAdminConsole(true);
             }}
-            disabled={needsInitialSetup}
           >
-            Serverinställningar
+            <span className="admin-entry-label">Admininställningar</span>
+            <small>Google-nycklar & server</small>
           </button>
           <button
             type="button"
@@ -3101,119 +3104,217 @@ const refreshProfiles = useCallback(async () => {
         </div>
       </header>
       <main className="content">
-        {showSetupPrompt ? (
-          <section className="setup-card">
-            <div>
-              <p className="eyebrow subtle">Initial konfiguration</p>
-              <h2>Sätt adminlösenord & Google-uppgifter</h2>
-              <p>
-                Första gången du startar servern behöver du välja ett adminlösenord och lägga in din
-                Google Places API-nyckel. Här kan du även spara din Google OAuth-klient för att
-                möjliggöra inloggning via Google-konto. Alla värden sparas i databasen i stället för
-                i `.env`-filer.
-              </p>
-            </div>
-            {needsInitialSetup && (
-              <p className="setup-warning">
-                Både adminlösen och Google-nyckel krävs innan du kan använda appen.
-              </p>
-            )}
-            {settingsStatus.adminConfigured && (
-              <div className={`setup-lock-panel ${setupUnlocked ? "unlocked" : ""}`}>
-                <div>
-                  <p className="eyebrow subtle">Adminåtkomst</p>
-                  <h4>{setupUnlocked ? "Upplåst" : "Lås upp serverinställningarna"}</h4>
-                  <p>
-                    Ange adminlösenordet för att kunna uppdatera Google-nycklar och andra
-                    serverinställningar. Lösenordet skickas krypterat till servern och används bara
-                    för att verifiera dig.
-                  </p>
-                </div>
-                <div className="setup-lock-actions">
-                  <input
-                    type="password"
-                    placeholder="Adminlösenord"
-                    value={setupAdminKey}
-                    onChange={(event) => {
-                      setSetupAdminKey(event.target.value);
-                      setSetupUnlockError("");
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={handleSetupUnlock}
-                    disabled={setupUnlocking || !setupAdminKey}
-                  >
-                    {setupUnlocking ? "Verifierar..." : setupUnlocked ? "Verifiera igen" : "Lås upp"}
-                  </button>
-                </div>
-                {setupUnlockError && <p className="error">{setupUnlockError}</p>}
+        {showAdminConsole && (
+          <section className="admin-console">
+            <div className="admin-console-header">
+              <div>
+                <p className="eyebrow subtle">Administratör</p>
+                <h2>Serverinställningar & användare</h2>
               </div>
-            )}
-            <fieldset className="setup-grid" disabled={setupFieldsDisabled}>
-              <label>
-                <span>Nytt adminlösenord</span>
-                <input
-                  type="password"
-                  name="adminPassword"
-                  value={setupValues.adminPassword}
-                  onChange={handleSetupInputChange}
-                  placeholder="Minst 8 tecken"
-                />
-              </label>
-              <label>
-                <span>Google Maps Places API-nyckel</span>
-                <input
-                  type="text"
-                  name="googleMapsKey"
-                  value={setupValues.googleMapsKey}
-                  onChange={handleSetupInputChange}
-                  placeholder="AIza..."
-                />
-              </label>
-              <label>
-                <span>Google OAuth Client ID (för Google-inloggning)</span>
-                <input
-                  type="text"
-                  name="googleClientId"
-                  value={setupValues.googleClientId}
-                  onChange={handleSetupInputChange}
-                  placeholder="1234567890-xxxx.apps.googleusercontent.com"
-                />
-              </label>
-            </fieldset>
-            <div className="setup-actions">
-              <button
-                type="button"
-                className="ghost"
-                onClick={handleSubmitSetup}
-                disabled={setupSubmitting}
-              >
-                {setupSubmitting ? "Sparar..." : "Spara inställningar"}
-              </button>
               {!needsInitialSetup && (
                 <button
                   type="button"
                   className="link-button"
                   onClick={() => {
-                    setShowSetupPrompt(false);
+                    setShowAdminConsole(false);
                     setSetupError("");
                     setSetupSuccess("");
-                    setSetupUnlockError("");
-                    setSetupUnlocking(false);
-                    setSetupUnlocked(!settingsStatus.adminConfigured);
-                    setSetupAdminKey("");
+                    setAdminConsoleError("");
                   }}
                 >
                   Stäng
                 </button>
               )}
             </div>
-            {setupError && <p className="error setup-message">{setupError}</p>}
-            {setupSuccess && <p className="success setup-message">{setupSuccess}</p>}
+            {settingsStatus.adminConfigured && !adminConsoleUnlocked ? (
+              <div className="admin-login-card">
+                <p>Ange adminlösenordet för att låsa upp serverinställningar och användare.</p>
+                <div className="setup-lock-actions">
+                  <input
+                    type="password"
+                    placeholder="Adminlösenord"
+                    value={adminConsoleKey}
+                    onChange={(event) => {
+                      setAdminConsoleKey(event.target.value);
+                      setAdminConsoleError("");
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={handleAdminConsoleUnlock}
+                    disabled={adminConsoleVerifying || !adminConsoleKey}
+                  >
+                    {adminConsoleVerifying ? "Verifierar..." : "Lås upp"}
+                  </button>
+                </div>
+                {adminConsoleError && <p className="error">{adminConsoleError}</p>}
+              </div>
+            ) : (
+              <>
+                {needsInitialSetup && (
+                  <p className="setup-warning">
+                    Både adminlösen och Google-nyckel krävs innan du kan använda appen.
+                  </p>
+                )}
+                <div className="admin-console-tabs">
+                  <button
+                    type="button"
+                    className={adminConsoleActiveTab === "settings" ? "active" : ""}
+                    onClick={() => setAdminConsoleActiveTab("settings")}
+                  >
+                    Serverinställningar
+                  </button>
+                  <button
+                    type="button"
+                    className={adminConsoleActiveTab === "users" ? "active" : ""}
+                    onClick={() => {
+                      setAdminConsoleActiveTab("users");
+                      loadAdminUsers();
+                    }}
+                    disabled={!adminConsoleUnlocked}
+                  >
+                    Hantera användare
+                  </button>
+                </div>
+                {adminConsoleActiveTab === "settings" && (
+                  <div className="setup-card admin-section">
+                    <div>
+                      <p className="eyebrow subtle">Initial konfiguration</p>
+                      <h2>Sätt adminlösenord & Google-uppgifter</h2>
+                      <p>
+                        Välj ett adminlösenord och lägg in Google-nycklarna. Dessa sparas i databasen i
+                        stället för i `.env`-filer.
+                      </p>
+                    </div>
+                    <fieldset
+                      className="setup-grid"
+                      disabled={settingsStatus.adminConfigured && !adminConsoleUnlocked}
+                    >
+                      <label>
+                        <span>Nytt adminlösenord</span>
+                        <input
+                          type="password"
+                          name="adminPassword"
+                          value={setupValues.adminPassword}
+                          onChange={handleSetupInputChange}
+                          placeholder="Minst 8 tecken"
+                        />
+                      </label>
+                      <label>
+                        <span>Google Maps Places API-nyckel</span>
+                        <input
+                          type="text"
+                          name="googleMapsKey"
+                          value={setupValues.googleMapsKey}
+                          onChange={handleSetupInputChange}
+                          placeholder="AIza..."
+                        />
+                      </label>
+                      <label>
+                        <span>Google OAuth Client ID (för Google-inloggning)</span>
+                        <input
+                          type="text"
+                          name="googleClientId"
+                          value={setupValues.googleClientId}
+                          onChange={handleSetupInputChange}
+                          placeholder="1234567890-xxxx.apps.googleusercontent.com"
+                        />
+                      </label>
+                    </fieldset>
+                    <div className="setup-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={handleSubmitSetup}
+                        disabled={setupSubmitting}
+                      >
+                        {setupSubmitting ? "Sparar..." : "Spara inställningar"}
+                      </button>
+                    </div>
+                    {setupError && <p className="error setup-message">{setupError}</p>}
+                    {setupSuccess && <p className="success setup-message">{setupSuccess}</p>}
+                  </div>
+                )}
+                {adminConsoleActiveTab === "users" && (
+                  <div className="admin-panel">
+                    <div className="admin-header">
+                      <div>
+                        <p className="eyebrow subtle">Användare</p>
+                        <h4>Hantera konton</h4>
+                      </div>
+                      <div className="admin-actions">
+                        <button type="button" className="ghost" onClick={loadAdminUsers}>
+                          Uppdatera
+                        </button>
+                      </div>
+                    </div>
+                    {adminError && <p className="error">{adminError}</p>}
+                    {adminLoading ? (
+                      <p>Hämtar användare...</p>
+                    ) : adminUsers.length === 0 ? (
+                      <p className="placeholder">Inga användare hittades.</p>
+                    ) : (
+                      <table className="admin-table">
+                        <thead>
+                          <tr>
+                            <th>Användare</th>
+                            <th>Skapad</th>
+                            <th>Onboarding</th>
+                            <th>Status</th>
+                            <th>Åtgärder</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {adminUsers.map((user) => (
+                            <tr key={user.id}>
+                              <td>{user.username}</td>
+                              <td>{new Date(user.createdAt).toLocaleString("sv-SE")}</td>
+                              <td>{user.onboardingDone ? "Klar" : "Ej klar"}</td>
+                              <td>
+                                {user.progress ? (
+                                  <div className="progress-badges">
+                                    {USER_PROGRESS_FIELDS.map((field) => (
+                                      <span
+                                        key={`${user.id}-${field.key}`}
+                                        className={`progress-badge ${user.progress[field.key] ? "done" : ""}`}
+                                      >
+                                        {field.label}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="field-note">Ingen sparad profil</span>
+                                )}
+                              </td>
+                              <td className="admin-actions-cell">
+                                <button
+                                  type="button"
+                                  className="ghost"
+                                  onClick={() => handleAdminResetOnboarding(user.id)}
+                                >
+                                  Återställ onboarding
+                                </button>
+                                <button
+                                  type="button"
+                                  className="link-button"
+                                  onClick={() => handleAdminDeleteUser(user.id)}
+                                >
+                                  Ta bort
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </section>
-        ) : !currentUser ? (
+        )}
+        {!needsInitialSetup ? (
           <div className="auth-panel">
             <div>
               <p className="eyebrow subtle">Logga in eller skapa konto</p>
@@ -3429,75 +3530,7 @@ const refreshProfiles = useCallback(async () => {
           </>
         ) : (
           <>
-            <div className="admin-panel">
-              <div className="admin-header">
-                <div>
-                  <p className="eyebrow subtle">Admin</p>
-                  <h4>Hantera användare</h4>
-                </div>
-                <div className="admin-actions">
-                  <input
-                    type="password"
-                    placeholder="Admin-nyckel"
-                    value={adminKey}
-                    onChange={(event) => setAdminKey(event.target.value)}
-                  />
-                  <button type="button" className="ghost" onClick={handleAdminUnlock}>
-                    Lås upp
-                  </button>
-                  <button type="button" className="ghost" onClick={loadAdminUsers} disabled={!adminUnlocked}>
-                    Uppdatera
-                  </button>
-                </div>
-              </div>
-              {adminError && <p className="error">{adminError}</p>}
-              {adminUnlocked && (
-                <div className="admin-users">
-                  {adminLoading ? (
-                    <p>Hämtar användare...</p>
-                  ) : adminUsers.length === 0 ? (
-                    <p className="placeholder">Inga användare hittades.</p>
-                  ) : (
-                    <table className="admin-table">
-                      <thead>
-                        <tr>
-                          <th>Användare</th>
-                          <th>Skapad</th>
-                          <th>Onboarding</th>
-                          <th>Åtgärder</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {adminUsers.map((user) => (
-                          <tr key={user.id}>
-                            <td>{user.username}</td>
-                            <td>{user.createdAt?.slice(0, 10)}</td>
-                            <td>{user.onboardingDone ? "Klar" : "Ej klar"}</td>
-                            <td className="admin-actions-cell">
-                              <button
-                                type="button"
-                                className="ghost"
-                                onClick={() => handleAdminResetOnboarding(user.id)}
-                              >
-                                Återställ onboarding
-                              </button>
-                              <button
-                                type="button"
-                                className="link-button"
-                                onClick={() => handleAdminDeleteUser(user.id)}
-                              >
-                                Ta bort
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-            </div>
-        <div className="top-tabs">
+            <div className="top-tabs">
           <div className="tabs-copy">
             <p className="tab-eyebrow">Resultat & scenarier</p>
             <h2>Se kalkylen</h2>

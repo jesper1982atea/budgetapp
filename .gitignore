@@ -20,3 +20,4 @@ client/dist
 npm-debug.log*
 yarn-debug.log*
 .Trash-*
+/server/data/budget.db

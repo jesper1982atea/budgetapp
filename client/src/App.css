@@ -100,6 +100,28 @@ body {
   font-weight: 600;
 }
 
+.admin-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  padding: 0.75rem 1rem;
+  background: rgba(15, 23, 42, 0.2);
+  color: #0f172a;
+}
+
+.admin-entry-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.admin-entry small {
+  font-size: 0.75rem;
+  color: #475569;
+}
+
 .content {
   display: flex;
   flex-direction: column;
@@ -195,6 +217,62 @@ body {
   gap: 1rem;
 }
 
+.admin-console {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 1.5rem;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.admin-console-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.admin-console-tabs {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.admin-console-tabs button {
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  padding: 0.4rem 0.9rem;
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.admin-console-tabs button.active {
+  background: #1d4ed8;
+  color: #f8fafc;
+  border-color: #1d4ed8;
+  box-shadow: 0 8px 18px rgba(29, 78, 216, 0.25);
+}
+
+.admin-console-tabs button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.admin-login-card {
+  border: 1px dashed #cbd5f5;
+  border-radius: 14px;
+  padding: 1rem;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 .setup-lock-panel {
   border: 1px dashed #cbd5f5;
   border-radius: 14px;
@@ -253,6 +331,14 @@ body {
 .setup-grid:disabled {
   opacity: 0.6;
   pointer-events: none;
+}
+
+.address-result-content img {
+  transition: border-color 0.2s ease;
+}
+
+.setup-lock-actions input {
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .setup-warning {
@@ -834,6 +920,34 @@ body {
 
 .admin-table th {
   background: #f8fafc;
+}
+
+.progress-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.progress-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  background: #f8fafc;
+}
+
+.progress-badge.done {
+  border-color: #bbf7d0;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.progress-badge:not(.done) {
+  border-color: #fecaca;
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .admin-actions-cell {
@@ -2583,10 +2697,37 @@ button.primary {
   color: rgba(226, 232, 240, 0.9);
 }
 
+.app.dark .setup-lock-panel {
+  border-color: #1e293b;
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.app.dark .setup-lock-panel.unlocked {
+  border-color: rgba(14, 165, 233, 0.6);
+  background: rgba(14, 116, 233, 0.18);
+}
+
+.app.dark .setup-lock-actions input,
+.app.dark .setup-grid input {
+  background: #020817;
+  border-color: #1e293b;
+  color: #e2e8f0;
+}
+
 .app.dark .hero-actions .user-chip,
 .app.dark .highlight {
   background: rgba(15, 23, 42, 0.5);
   border-color: rgba(255, 255, 255, 0.18);
+}
+
+.app.dark .admin-entry {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+}
+
+.app.dark .admin-entry small {
+  color: #cbd5f5;
 }
 
 .app.dark .theme-toggle {
@@ -2605,11 +2746,74 @@ button.primary {
 .app.dark .forecast-panel-content,
 .app.dark .auth-panel,
 .app.dark .onboarding-card,
-.app.dark .setup-card {
+.app.dark .setup-card,
+.app.dark .admin-console,
+.app.dark .admin-panel,
+.app.dark .result-card,
+.app.dark .outcome-table-wrap,
+.app.dark .outcome-extra,
+.app.dark .outcome-extra-list li,
+.app.dark .print-report,
+.app.dark .print-stats div,
+.app.dark .loan-overview {
   background: #0f172a;
   color: #e2e8f0;
   box-shadow: none;
   border: 1px solid #1e293b;
+}
+
+.app.dark .admin-console-tabs button {
+  border-color: #1e293b;
+  background: rgba(15, 23, 42, 0.85);
+  color: #cbd5f5;
+}
+
+.app.dark .admin-console-tabs button.active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #f8fafc;
+  box-shadow: 0 8px 18px rgba(29, 78, 216, 0.3);
+}
+
+.app.dark .admin-login-card {
+  border-color: #1e293b;
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.app.dark .address-results li button {
+  background: rgba(15, 23, 42, 0.85);
+  border-color: #1e293b;
+  color: #e2e8f0;
+}
+
+.app.dark .address-results li button:hover {
+  background: rgba(37, 99, 235, 0.25);
+}
+
+.app.dark .scenario-switcher button {
+  background: rgba(15, 23, 42, 0.85);
+  border-color: #1e293b;
+  color: #cbd5f5;
+}
+
+.app.dark .scenario-switcher button.active {
+  border-color: #1d4ed8;
+}
+
+.app.dark .forecast-controls {
+  border-color: #1e293b;
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.app.dark .savings-forecast-header {
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.app.dark .result-card dl,
+.app.dark .result-card table,
+.app.dark .print-report table {
+  background: transparent;
+  color: #e2e8f0;
 }
 
 .app.dark .form-section,
@@ -2631,6 +2835,26 @@ button.primary {
 .app.dark .savings-forecast-card {
   background: rgba(15, 23, 42, 0.75);
   border-color: #1f2937;
+}
+
+.app.dark .broadband-card,
+.app.dark .broadband-summary,
+.app.dark .broadband-summary-card,
+.app.dark .property-preview-images div,
+.app.dark .electricity-card,
+.app.dark .property-buildings-header {
+  background: rgba(15, 23, 42, 0.75);
+  border-color: #1e293b;
+  color: #e2e8f0;
+}
+
+.app.dark .broadband-summary-card strong {
+  color: #f8fafc;
+}
+
+.app.dark .broadband-summary-card .subtle,
+.app.dark .broadband-grid label {
+  color: #94a3b8;
 }
 
 .app.dark input,
@@ -2685,6 +2909,33 @@ button.primary {
 .app.dark .setup-warning {
   background: rgba(251, 191, 36, 0.15);
   color: #facc15;
+}
+
+.app.dark .progress-badge {
+  border-color: #1e293b;
+  background: rgba(15, 23, 42, 0.85);
+  color: #cbd5f5;
+}
+
+.app.dark .progress-badge.done {
+  border-color: #166534;
+  background: rgba(22, 101, 52, 0.3);
+  color: #86efac;
+}
+
+.app.dark .progress-badge:not(.done) {
+  border-color: #7f1d1d;
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+}
+
+.app.dark .address-result-content span {
+  color: #e2e8f0;
+}
+
+.app.dark .address-result-content img,
+.app.dark .property-preview-images img {
+  border-color: #1e293b;
 }
 
 .app.dark .code-block {

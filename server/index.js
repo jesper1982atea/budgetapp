@@ -230,6 +230,71 @@ const getGoogleClientId = async () => {
   return stored || process.env.GOOGLE_OAUTH_CLIENT_ID || "";
 };
 
+const summarizeProfilePayload = (payload) => {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const incomePersons = Array.isArray(payload.incomePersons) ? payload.incomePersons : [];
+  const loans = Array.isArray(payload.loans) ? payload.loans : [];
+  const costItems = Array.isArray(payload.costItems) ? payload.costItems : [];
+  const savingsItems = Array.isArray(payload.savingsItems) ? payload.savingsItems : [];
+  const propertyInfo = payload.propertyInfo || {};
+  const electricity = payload.electricity || {};
+  const hasIncome = incomePersons.some(
+    (person) =>
+      (person.name && person.name.trim()) ||
+      Number(person.incomeGross) > 0 ||
+      Number(person.netIncome) > 0,
+  );
+  const hasLoans = loans.some(
+    (loan) =>
+      Number(loan.loanAmount) > 0 ||
+      Number(loan.amountNumber) > 0 ||
+      Number(loan.annualInterestRate) > 0,
+  );
+  const hasProperty =
+    (propertyInfo.name && propertyInfo.name.trim()) ||
+    Number(propertyInfo.value) > 0 ||
+    Number(propertyInfo.areaSqm) > 0;
+  const hasElectricity =
+    Boolean(electricity.provider) ||
+    Number(electricity.consumption) > 0 ||
+    Number(electricity.averagePrice) > 0;
+  const hasCosts = costItems.length > 0;
+  const hasSavings = savingsItems.length > 0;
+  return {
+    income: Boolean(hasIncome),
+    loans: Boolean(hasLoans),
+    property: Boolean(hasProperty),
+    electricity: Boolean(hasElectricity),
+    costs: Boolean(hasCosts),
+    savings: Boolean(hasSavings),
+  };
+};
+
+const getLatestProfileSummary = (userId) =>
+  new Promise((resolve) => {
+    db.get(
+      `SELECT payload FROM profiles WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`,
+      [userId],
+      (err, row) => {
+        if (err || !row) {
+          if (err) {
+            console.warn("Failed to load profile summary", err);
+          }
+          return resolve(null);
+        }
+        try {
+          const payload = JSON.parse(row.payload);
+          resolve(summarizeProfilePayload(payload));
+        } catch (parseErr) {
+          console.warn("Failed to parse profile summary", parseErr);
+          resolve(null);
+        }
+      },
+    );
+  });
+
 const mapDbUser = (row) => {
   if (!row) return null;
   return {
@@ -1014,12 +1079,23 @@ app.post("/api/settings/verify-admin", requireAdmin, (_req, res) => {
 app.get("/api/admin/users", requireAdmin, (_req, res) => {
   db.all(
     `SELECT id, email AS username, created_at AS createdAt, onboarding_done AS onboardingDone FROM users ORDER BY created_at DESC`,
-    (err, rows) => {
+    async (err, rows) => {
       if (err) {
         console.error("Admin list users failed", err);
         return res.status(500).json({ error: "Kunde inte hämta användare." });
       }
-      res.json(rows || []);
+      try {
+        const summaries = await Promise.all(
+          (rows || []).map(async (row) => {
+            const progress = await getLatestProfileSummary(row.id);
+            return { ...row, progress };
+          }),
+        );
+        res.json(summaries);
+      } catch (summaryErr) {
+        console.error("Failed to build user summaries", summaryErr);
+        res.json(rows || []);
+      }
     },
   );
 });
