@@ -8,6 +8,7 @@ body {
   margin: 0;
   background: #f1f5f9;
   color: #0f172a;
+  overflow-x: hidden;
 }
 
 [data-theme="dark"] body {
@@ -2946,6 +2947,13 @@ button.primary {
   color: #cbd5f5;
 }
 
+.app.dark .onboarding-lead,
+.app.dark .onboarding-note,
+.app.dark .onboarding-step label,
+.app.dark .onboarding-step p {
+  color: #cbd5f5;
+}
+
 .app.dark .setup-warning {
   background: rgba(251, 191, 36, 0.15);
   color: #facc15;
@@ -2983,6 +2991,11 @@ button.primary {
   color: #e2e8f0;
 }
 
+.app img {
+  max-width: 100%;
+  height: auto;
+}
+
 @media (max-width: 1080px) {
   .summary-rail {
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2990,13 +3003,24 @@ button.primary {
 }
 
 @media (max-width: 768px) {
+  .app {
+    padding: 1.5rem 1rem 2rem;
+  }
+
   .hero {
     padding: 1.5rem;
+    text-align: center;
   }
 
   .hero-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .hero-actions > * {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
   }
 
   .highlight,
@@ -3013,16 +3037,57 @@ button.primary {
   .top-tabs {
     grid-template-columns: 1fr;
   }
+
+  .new-tab-inline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tab-buttons button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .summary-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .calculator-form,
+  .summary-grid-container,
+  .results,
+  .forecast-panel-content,
+  .auth-panel,
+  .setup-card,
+  .admin-console,
+  .admin-panel,
+  .custom-results,
+  .broadband-card,
+  .loan-summary-banner,
+  .insurance-summary-card {
+    padding: 1rem;
+  }
+
+  .hero h1 {
+    font-size: clamp(1.75rem, 6vw, 2.2rem);
+  }
+
+  .hero .lead {
+    font-size: 0.95rem;
+  }
 }
 
 @media (max-width: 640px) {
   .hero {
-    padding: 1.5rem;
+    padding: 1.25rem;
   }
 
   .highlight {
     width: 100%;
     margin-left: 0;
+  }
+
+  .hero .eyebrow {
+    text-align: center;
   }
 }
 
