@@ -485,10 +485,10 @@ function App() {
     setSetupSuccess("");
     setAdminConsoleError("");
     setAdminConsoleVerifying(false);
-    setAdminConsoleUnlocked(!settingsStatus.adminConfigured);
+    setAdminConsoleUnlocked(false);
     setAdminConsoleActiveTab("settings");
     setShowAdminConsole(true);
-  }, [settingsStatus.adminConfigured]);
+  }, []);
   useEffect(() => {
     const storedToken = localStorage.getItem(TOKEN_KEY);
     if (storedToken) {
@@ -1528,7 +1528,7 @@ const budgetOutcomeRows = useMemo(() => {
         };
         setSettingsStatus(status);
         setGoogleClientId(data.googleClientId || "");
-        setAdminConsoleUnlocked(!status.adminConfigured);
+        setAdminConsoleUnlocked(false);
       } catch (err) {
         console.error("Failed to fetch server settings status", err);
       }
@@ -3127,7 +3127,7 @@ useEffect(() => {
                 </button>
               )}
             </div>
-            {settingsStatus.adminConfigured && !adminConsoleUnlocked ? (
+            {!adminConsoleUnlocked ? (
               <div className="admin-login-card">
                 <p>Ange adminlösenordet för att låsa upp serverinställningar och användare.</p>
                 <div className="setup-lock-actions">
