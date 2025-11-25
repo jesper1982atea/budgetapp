@@ -2842,7 +2842,11 @@ button.primary {
 .app.dark .broadband-summary-card,
 .app.dark .property-preview-images div,
 .app.dark .electricity-card,
-.app.dark .property-buildings-header {
+.app.dark .property-buildings-header,
+.app.dark .income-person-card,
+.app.dark .income-summary-card,
+.app.dark .tax-adjustment-card,
+.app.dark .insurance-summary-card {
   background: rgba(15, 23, 42, 0.75);
   border-color: #1e293b;
   color: #e2e8f0;
@@ -2855,6 +2859,27 @@ button.primary {
 .app.dark .broadband-summary-card .subtle,
 .app.dark .broadband-grid label {
   color: #94a3b8;
+}
+
+.app.dark .income-person-card label,
+.app.dark .income-summary-grid span,
+.app.dark .person-net-summary span,
+.app.dark .insurance-description {
+  color: #cbd5f5;
+}
+
+.app.dark .person-net-summary {
+  border-color: #1e293b;
+}
+
+.app.dark .tax-toggle {
+  color: #e2e8f0;
+}
+
+.app.dark .tax-adjustment-banner {
+  background: rgba(14, 165, 233, 0.12);
+  border-color: #1e293b;
+  color: #e2e8f0;
 }
 
 .app.dark input,
