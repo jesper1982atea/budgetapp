@@ -1269,6 +1269,7 @@ function App() {
     [customTabs],
   );
   const needsInitialSetup = !settingsStatus.adminConfigured || !settingsStatus.googleKeyConfigured;
+  const isAuthenticated = Boolean(authToken && currentUser);
 
   const topLinePlan = isFutureView && futureScenario ? futureScenario.futureCombinedPlan : combinedMonthlyPlan;
   const topLineLoan =
@@ -3314,13 +3315,18 @@ useEffect(() => {
             )}
           </section>
         )}
-        {!needsInitialSetup ? (
+        {!isAuthenticated ? (
           <div className="auth-panel">
             <div>
               <p className="eyebrow subtle">Logga in eller skapa konto</p>
               <h2>Kom igång</h2>
             </div>
             <div className="auth-fields">
+              {needsInitialSetup && (
+                <p className="field-note">
+                  Slutför admininställningarna eller logga in för att använda kalkylen.
+                </p>
+              )}
               <input
                 type="text"
                 placeholder="Användarnamn"
