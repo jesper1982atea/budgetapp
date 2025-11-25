@@ -134,6 +134,16 @@ const ensureDb = () => {
       )`,
     );
     db.run(
+      `CREATE TABLE IF NOT EXISTS provider_catalog (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(type, name)
+      )`,
+    );
+    db.run(
       `CREATE TABLE IF NOT EXISTS public_shares (
         token TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -750,6 +760,57 @@ app.get("/api/insurance", (req, res) => {
   );
 });
 
+const PROVIDER_TYPES = ["broadband", "insurance", "bank"];
+
+app.get("/api/providers/:type", (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Inte inloggad." });
+  }
+  const type = req.params.type;
+  if (!PROVIDER_TYPES.includes(type)) {
+    return res.status(400).json({ error: "Ogiltig typ." });
+  }
+  db.all(
+    `SELECT name FROM provider_catalog WHERE type = ? ORDER BY LOWER(name) ASC`,
+    [type],
+    (err, rows) => {
+      if (err) {
+        console.error("Failed to list providers", err);
+        return res.status(500).json({ error: "Kunde inte hämta leverantörer." });
+      }
+      res.json({ providers: rows.map((row) => row.name) });
+    },
+  );
+});
+
+app.post("/api/providers", (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Inte inloggad." });
+  }
+  const type = req.body?.type;
+  const rawName = req.body?.name;
+  if (!PROVIDER_TYPES.includes(type)) {
+    return res.status(400).json({ error: "Ogiltig typ." });
+  }
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  if (!name) {
+    return res.status(400).json({ error: "Ange ett namn." });
+  }
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT OR IGNORE INTO provider_catalog (id, type, name, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
+    [id, type, name, req.user.id, now],
+    function (err) {
+      if (err) {
+        console.error("Failed to save provider", err);
+        return res.status(500).json({ error: "Kunde inte spara leverantör." });
+      }
+      res.status(201).json({ success: true, name });
+    },
+  );
+});
+
 app.post("/api/insurance", (req, res) => {
   if (!req.user) {
     return res.status(401).json({ error: "Inte inloggad." });
@@ -823,6 +884,12 @@ app.post("/api/tibber/price", async (req, res) => {
   if (!token) {
     return res.status(400).json({ error: "Tibber-token saknas." });
   }
+  const hasNonAscii = /[^\x00-\x7F]/.test(token);
+  if (hasNonAscii) {
+    return res.status(400).json({
+      error: "Tibber-token innehåller otillåtna tecken. Kopiera den exakt från Tibber utan specialtecken.",
+    });
+  }
   const query = `
     {
       viewer {
@@ -882,6 +949,23 @@ app.post("/api/tibber/price", async (req, res) => {
     console.error("Tibber fetch failed", err);
     res.status(500).json({ error: `Kunde inte hämta Tibber-data: ${err.message || "okänt fel"}` });
   }
+});
+
+app.post("/api/tibber/login", async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Inte inloggad." });
+  }
+  const email = req.body?.email;
+  const password = req.body?.password;
+  if (!email || !password) {
+    return res.status(400).json({ error: "E-post och lösenord krävs för Tibber." });
+  }
+  // Tibber har inte ett öppet GraphQL-fält för e-post/lösen-inloggning längre.
+  // Återkoppla direkt så klienten kan visa ett tydligt meddelande.
+  return res.status(501).json({
+    error:
+      "Tibber stödjer inte inloggning via e-post/lösenord i API:et. Använd en Personal Access Token från Tibber-appen.",
+  });
 });
 
 app.get("/api/profiles", async (req, res) => {

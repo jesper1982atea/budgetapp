@@ -224,6 +224,7 @@ const normalizeSavedLoans = (items) => {
           : item.rateType === "fixed"
             ? "3"
             : "",
+      bank: item.bank ?? "",
     }))
     .slice(0, MAX_LOANS);
 };
@@ -236,6 +237,7 @@ const createLoanRow = (index = 0, baseName = "Lån") => ({
   amortizationPercent: "2",
   rateType: "variable",
   fixedTermYears: "3",
+  bank: "",
 });
 
 const createInitialLoans = () => [];
@@ -335,7 +337,6 @@ const BASE_TABS = [
   { id: "results", label: "Resultat & scenarion", requiresResult: true, type: "system" },
   { id: "forecast", label: "Prognos & diagram", requiresResult: true, type: "system" },
   { id: "outcome", label: "Utfall", requiresResult: false, type: "system" },
-  { id: "tibber", label: "Tibber test", requiresResult: false, type: "system" },
 ];
 
 const canCalculateLoans = (loans) => {
@@ -436,6 +437,13 @@ function App() {
     error: "",
     response: null,
   });
+  const [tibberLoginState, setTibberLoginState] = useState({
+    email: "",
+    password: "",
+    loading: false,
+    error: "",
+    success: "",
+  });
   const propertyInsuranceMonthly = useMemo(
     () => (Number(propertyInsurance.annualPremium) > 0 ? Number(propertyInsurance.annualPremium) / 12 : 0),
     [propertyInsurance.annualPremium],
@@ -471,11 +479,69 @@ function App() {
   const [feedback, setFeedback] = useState("");
   const [hasCalculated, setHasCalculated] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
-  const [customTabs, setCustomTabs] = useState([]);
-  const [newTabLabel, setNewTabLabel] = useState("");
   const [adminUsers, setAdminUsers] = useState([]);
   const [adminError, setAdminError] = useState("");
   const [adminLoading, setAdminLoading] = useState(false);
+  const [providerOptions, setProviderOptions] = useState({
+    broadband: [],
+    insurance: [],
+    bank: [],
+  });
+  const fetchProviders = useCallback(
+    async (type) => {
+      if (!authToken) {
+        return;
+      }
+      try {
+        const response = await authFetch(authToken, `${API_BASE_URL}/api/providers/${type}`);
+        if (!response.ok) {
+          throw new Error("Kunde inte hämta leverantörer.");
+        }
+        const data = await response.json();
+        if (Array.isArray(data.providers)) {
+          setProviderOptions((prev) => ({ ...prev, [type]: data.providers }));
+        }
+      } catch (err) {
+        console.error("Failed to load providers", err);
+      }
+    },
+    [authToken],
+  );
+
+  const saveProviderName = useCallback(
+    async (type, name) => {
+      const trimmed = name.trim();
+      if (!trimmed || !authToken) {
+        return;
+      }
+      const existing = providerOptions[type] || [];
+      if (existing.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+        return;
+      }
+      setProviderOptions((prev) => ({
+        ...prev,
+        [type]: [...existing, trimmed].sort((a, b) => a.localeCompare(b, "sv") || a.localeCompare(b)),
+      }));
+      try {
+        await authFetch(authToken, `${API_BASE_URL}/api/providers`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, name: trimmed }),
+        });
+      } catch (err) {
+        console.error("Failed to save provider", err);
+      }
+    },
+    [authToken, providerOptions],
+  );
+  const sectionNavItems = [
+    { id: "income", label: "Inkomst & skatt", description: "Lön, tabell och bilförmån" },
+    { id: "property", label: "Fastighet", description: "Adress, värde och byggnader" },
+    { id: "loans", label: "Bolån", description: "Lånedelar, ränta och amortering" },
+    { id: "costs", label: "Budget & kostnader", description: "Övriga utgifter och bredband" },
+    { id: "savings", label: "Sparande", description: "Sparmål och scenarier" },
+  ];
+  const [activeSection, setActiveSection] = useState(sectionNavItems[0].id);
   const feedbackTimeout = useRef(null);
   const lastSubmittedSnapshot = useRef("");
   const lastSavedProfileSnapshot = useRef("");
@@ -516,6 +582,16 @@ function App() {
     actual: "",
     linkId: "",
   });
+  const [showInsuranceForm, setShowInsuranceForm] = useState(false);
+  useEffect(() => {
+    if (!authToken) {
+      setProviderOptions({ broadband: [], insurance: [], bank: [] });
+      return;
+    }
+    fetchProviders("broadband");
+    fetchProviders("insurance");
+    fetchProviders("bank");
+  }, [authToken, fetchProviders]);
   useEffect(() => {
     if (addressQuery.trim().length < 3 || !authToken) {
       setAddressResults([]);
@@ -1273,12 +1349,43 @@ function App() {
   const activeCostSummaryRows =
     isFutureView && futureScenario ? scenarioCostSummaryRows : costSummaryRows;
 
-  const tabs = useMemo(
-    () => [...BASE_TABS, ...customTabs],
-    [customTabs],
-  );
+  const tabs = BASE_TABS;
   const needsInitialSetup = !settingsStatus.adminConfigured || !settingsStatus.googleKeyConfigured;
   const isAuthenticated = Boolean(authToken && currentUser);
+  const sectionProgress = useMemo(() => {
+    const hasIncome = incomePersons.some((person) => Number(person.incomeGross) > 0);
+    const hasProperty = Boolean(
+      (propertyInfo.value && Number(propertyInfo.value) > 0) || (propertyInfo.name && propertyInfo.name.trim()),
+    );
+    const hasLoan = activeLoans.some((loan) => Number(loan.amount) > 0 && Number(loan.annualInterestRate) >= 0);
+    const hasCosts =
+      costItems.length > 0 ||
+      electricityTotals.monthlyCost > 0 ||
+      propertyInsuranceMonthly > 0 ||
+      broadbandMonthly > 0;
+    const hasSavings = savingsItems.length > 0;
+
+    const map = {
+      income: hasIncome,
+      property: hasProperty,
+      loans: hasLoan,
+      costs: hasCosts,
+      savings: hasSavings,
+    };
+    return sectionNavItems.map((item) => ({ ...item, done: Boolean(map[item.id]) }));
+  }, [
+    activeLoans,
+    broadbandMonthly,
+    costItems.length,
+    electricityTotals.monthlyCost,
+    propertyInfo.name,
+    propertyInfo.value,
+    propertyInsuranceMonthly,
+    savingsItems.length,
+    incomePersons,
+    sectionNavItems,
+  ]);
+  const missingSections = sectionProgress.filter((item) => !item.done).map((item) => item.label);
 
   const topLinePlan = isFutureView && futureScenario ? futureScenario.futureCombinedPlan : combinedMonthlyPlan;
   const topLineLoan =
@@ -2022,6 +2129,55 @@ const budgetOutcomeRows = useMemo(() => {
     }
   };
 
+  const handleTibberLogin = async () => {
+    if (!authToken || !currentUser) {
+      setTibberLoginState((prev) => ({
+        ...prev,
+        error: "Logga in i budgetappen först.",
+        success: "",
+      }));
+      return;
+    }
+    if (!tibberLoginState.email.trim() || !tibberLoginState.password.trim()) {
+      setTibberLoginState((prev) => ({
+        ...prev,
+        error: "Ange e-post och lösenord för Tibber.",
+        success: "",
+      }));
+      return;
+    }
+    setTibberLoginState((prev) => ({ ...prev, loading: true, error: "", success: "" }));
+    try {
+      const response = await authFetch(authToken, `${API_BASE_URL}/api/tibber/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: tibberLoginState.email.trim(),
+          password: tibberLoginState.password,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.token) {
+        throw new Error(data?.error || "Kunde inte logga in hos Tibber.");
+      }
+      setTibberTestState((prev) => ({ ...prev, token: data.token }));
+      setTibberLoginState((prev) => ({
+        ...prev,
+        password: "",
+        loading: false,
+        error: "",
+        success: "Token hämtad. Du kan nu testa eller importera.",
+      }));
+    } catch (err) {
+      setTibberLoginState((prev) => ({
+        ...prev,
+        loading: false,
+        error: err.message || "Kunde inte logga in hos Tibber.",
+        success: "",
+      }));
+    }
+  };
+
   const handleAdoptTibberToken = () => {
     if (!electricity.tibberToken) {
       showFeedback("Lägg först in tokenen under Övriga kostnader.");
@@ -2147,11 +2303,17 @@ const budgetOutcomeRows = useMemo(() => {
 
   const handleBroadbandChange = (event) => {
     const { name, value } = event.target;
+    if (name === "provider" && value.trim()) {
+      saveProviderName("broadband", value);
+    }
     setBroadband((prev) => ({ ...prev, [name]: value }));
   };
 
   const handlePropertyInsuranceChange = (event) => {
     const { name, value } = event.target;
+    if (name === "provider" && value.trim()) {
+      saveProviderName("insurance", value);
+    }
     setPropertyInsurance((prev) => ({ ...prev, [name]: value }));
   };
 
@@ -2186,6 +2348,9 @@ const budgetOutcomeRows = useMemo(() => {
         }
         if (field === "rateType" && value !== "fixed") {
           return { ...loan, rateType: value, fixedTermYears: "" };
+        }
+        if (field === "bank" && value.trim()) {
+          saveProviderName("bank", value);
         }
         return { ...loan, [field]: value };
       }),
@@ -2289,34 +2454,6 @@ const budgetOutcomeRows = useMemo(() => {
       return;
     }
     window.print();
-  };
-
-  const addCustomTab = () => {
-    const label = newTabLabel.trim();
-    if (!label) {
-      showFeedback("Döp fliken innan du lägger till den.");
-      return;
-    }
-    const id = `custom-${createCostId()}`;
-    setCustomTabs((prev) => [
-      ...prev,
-      { id, label, type: "custom", requiresResult: false, note: "" },
-    ]);
-    setActiveTab(id);
-    setNewTabLabel("");
-  };
-
-  const removeCustomTab = (tabId) => {
-    setCustomTabs((prev) => prev.filter((tab) => tab.id !== tabId));
-    if (activeTab === tabId) {
-      setActiveTab("overview");
-    }
-  };
-
-  const handleCustomTabNoteChange = (tabId, value) => {
-    setCustomTabs((prev) =>
-      prev.map((tab) => (tab.id === tabId ? { ...tab, note: value } : tab)),
-    );
   };
 
   const applyProfilePayload = (payload) => {
@@ -3180,6 +3317,14 @@ useEffect(() => {
                   >
                     Hantera användare
                   </button>
+                  <button
+                    type="button"
+                    className={adminConsoleActiveTab === "tibber" ? "active" : ""}
+                    onClick={() => setAdminConsoleActiveTab("tibber")}
+                    disabled={!adminConsoleUnlocked}
+                  >
+                    Tibber test
+                  </button>
                 </div>
                 {adminConsoleActiveTab === "settings" && (
                   <div className="setup-card admin-section">
@@ -3312,6 +3457,168 @@ useEffect(() => {
                         </tbody>
                       </table>
                     )}
+                  </div>
+                )}
+                {adminConsoleActiveTab === "tibber" && (
+                  <div className="tibber-dev-panel">
+                    <div className="tibber-header">
+                      <div>
+                        <p className="eyebrow subtle">Tibber modul</p>
+                        <h2>Testa Tibber-integration</h2>
+                        <p>
+                          Utveckla mot Tibber utan att påverka budgeten. Klistra in en personal access token
+                          eller försök logga in (om Tibber-kontot stöder det).
+                        </p>
+                      </div>
+                      <div className="tibber-actions">
+                        <button type="button" className="ghost" onClick={handleAdoptTibberToken}>
+                          Använd token från kalkylen
+                        </button>
+                        <button
+                          type="button"
+                          className="primary"
+                          onClick={handleTibberTest}
+                          disabled={tibberTestState.loading}
+                        >
+                          {tibberTestState.loading ? "Hämtar..." : "Testa mot Tibber"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="tibber-test-grid">
+                      <label>
+                        <span>Tibber personal access token</span>
+                        <input
+                          type="text"
+                          value={tibberTestState.token}
+                          onChange={(event) =>
+                            setTibberTestState((prev) => ({ ...prev, token: event.target.value }))
+                          }
+                          placeholder="Skapa token under Tibber → Profile → Developer"
+                        />
+                      </label>
+                      <label>
+                        <span>Tibber e-post (om inloggning stöds)</span>
+                        <input
+                          type="email"
+                          value={tibberLoginState.email}
+                          onChange={(event) =>
+                            setTibberLoginState((prev) => ({
+                              ...prev,
+                              email: event.target.value,
+                              error: "",
+                              success: "",
+                            }))
+                          }
+                          placeholder="namn@example.com"
+                        />
+                      </label>
+                      <label>
+                        <span>Tibber lösenord (om inloggning stöds)</span>
+                        <input
+                          type="password"
+                          value={tibberLoginState.password}
+                          onChange={(event) =>
+                            setTibberLoginState((prev) => ({
+                              ...prev,
+                              password: event.target.value,
+                              error: "",
+                              success: "",
+                            }))
+                          }
+                          placeholder="••••••••"
+                        />
+                      </label>
+                      <div className="tibber-actions">
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={handleTibberLogin}
+                          disabled={tibberLoginState.loading}
+                        >
+                          {tibberLoginState.loading ? "Loggar in..." : "Försök logga in & hämta token"}
+                        </button>
+                      </div>
+                      {tibberLoginState.error && <p className="error">{tibberLoginState.error}</p>}
+                      {tibberLoginState.success && (
+                        <p className="success">{tibberLoginState.success}</p>
+                      )}
+                    </div>
+                    {tibberTestState.error && <p className="error">{tibberTestState.error}</p>}
+                    {tibberTestState.response && (
+                      <div className="tibber-response">
+                        <h3>Senaste svar</h3>
+                        <div className="tibber-kpis">
+                          <div>
+                            <span>Pris just nu</span>
+                            <strong>
+                              {tibberTestState.response.price != null
+                                ? `${tibberTestState.response.price.toFixed(2)} kr/kWh`
+                                : "—"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>Senaste månadsförbrukning</span>
+                            <strong>
+                              {tibberTestState.response.monthlyConsumption != null
+                                ? `${NUMBER.format(tibberTestState.response.monthlyConsumption)} kWh`
+                                : "—"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>Årsförbrukning</span>
+                            <strong>
+                              {tibberTestState.response.annualConsumption != null
+                                ? `${NUMBER.format(tibberTestState.response.annualConsumption)} kWh`
+                                : "—"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>Kostnad denna månad</span>
+                            <strong>
+                              {tibberTestState.response.monthlyCost != null
+                                ? SEK.format(tibberTestState.response.monthlyCost)
+                                : "—"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>Föregående månad</span>
+                            <strong>
+                              {tibberTestState.response.previousMonthlyCost != null
+                                ? SEK.format(tibberTestState.response.previousMonthlyCost)
+                                : "—"}
+                            </strong>
+                          </div>
+                        </div>
+                        <pre className="code-block">
+                          {JSON.stringify(tibberTestState.response, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                    <div className="tibber-info">
+                      <div>
+                        <h3>GraphQL-frågan</h3>
+                        <pre className="code-block">
+{`{
+  viewer {
+    homes {
+      currentSubscription { priceInfo { current { total } } }
+      monthly: consumption(resolution: MONTHLY, first: 12) {
+        nodes { from consumption }
+      }
+    }
+  }
+}`}
+                        </pre>
+                      </div>
+                      <div>
+                        <h3>Kom ihåg</h3>
+                        <ul>
+                          <li>Tokenen behöver läsrättigheter på hemmet.</li>
+                          <li>Varje klick gör ett liveanrop mot Tibbers API.</li>
+                          <li>Data här påverkar inte budgeten förrän du importerar via kalkylens el-sektion.</li>
+                        </ul>
+                      </div>
+                    </div>
                   </div>
                 )}
               </>
@@ -3573,13 +3880,13 @@ useEffect(() => {
           <div className="tabs-copy">
             <p className="tab-eyebrow">Resultat & scenarier</p>
             <h2>Se kalkylen</h2>
-            <p>Växla mellan översikt, detaljer och prognos. Lägg till egna flikar för att jämföra scenarier.</p>
+            <p>Växla mellan översikt, detaljer och prognos.</p>
           </div>
-          <div className="tab-buttons">
-            {tabs.map((tab) => {
-              const disabled = tab.requiresResult && !result?.totals;
-              return (
-                <button
+            <div className="tab-buttons">
+              {tabs.map((tab) => {
+                const disabled = tab.requiresResult && !result?.totals;
+                return (
+                  <button
                   key={tab.id}
                   type="button"
                   className={activeTab === tab.id ? "active" : ""}
@@ -3587,58 +3894,60 @@ useEffect(() => {
                   onClick={() => setActiveTab(tab.id)}
                 >
                   <span>{tab.label}</span>
-                  {tab.type === "custom" && (
-                    <span
-                      className="custom-tab-remove"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeCustomTab(tab.id);
-                      }}
-                    >
-                      ×
-                    </span>
-                  )}
                 </button>
               );
             })}
           </div>
-          <div className="new-tab-inline">
-            <input
-              type="text"
-              placeholder="Ny flik"
-              value={newTabLabel}
-              onChange={(event) => setNewTabLabel(event.target.value)}
-            />
-            <button type="button" className="ghost" onClick={addCustomTab}>
-              + Lägg till flik
-            </button>
-          </div>
         </div>
 
         {activeTab === "overview" && (
-          <div className="page-block">
-            {result?.totals && (
-              <div className="summary-rail">
-                <div className="kpi-card accent">
-                  <p>Att lägga undan</p>
-                  <strong>{SEK.format(topLinePlan)}</strong>
-                  <span>{PERCENT.format(topLineShare ?? 0)} av nettolönen</span>
-                </div>
-                <div className="kpi-card">
-                  <p>Bolån / mån</p>
-                  <strong>{SEK.format(topLineLoan)}</strong>
-                  <span>{PERCENT.format(topLineLoanShare ?? 0)} av nettolönen</span>
-                </div>
-                <div className={`kpi-card ${topLineLeftover < 0 ? "negative" : ""}`}>
-                  <p>Kvar av nettolön</p>
-                  <strong>{SEK.format(topLineLeftover ?? 0)}</strong>
-                  <span>{topLineLeftover < 0 ? "Saknas för planen" : "Efter alla kostnader"}</span>
-                </div>
+          <>
+            <div className="section-nav" aria-label="Snabbnavigering">
+              {sectionNavItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`${activeSection === item.id ? "active" : ""} ${
+                    sectionProgress.find((s) => s.id === item.id)?.done ? "done" : "todo"
+                  }`}
+                  onClick={() => setActiveSection(item.id)}
+                >
+                  <span className="section-nav-label">{item.label}</span>
+                  <span className="section-nav-desc">{item.description}</span>
+                </button>
+              ))}
+            </div>
+            {missingSections.length > 0 && (
+              <div className="section-progress-hint">
+                <span>För att se fullständigt resultat saknas data i:</span>
+                <strong>{missingSections.join(", ")}</strong>
               </div>
             )}
 
-        <form className="calculator-form" onSubmit={(event) => event.preventDefault()}>
-          <section className="form-section">
+            <div className="page-block">
+              {result?.totals && (
+                <div className="summary-rail">
+                  <div className="kpi-card accent">
+                    <p>Att lägga undan</p>
+                    <strong>{SEK.format(topLinePlan)}</strong>
+                    <span>{PERCENT.format(topLineShare ?? 0)} av nettolönen</span>
+                  </div>
+                  <div className="kpi-card">
+                    <p>Bolån / mån</p>
+                    <strong>{SEK.format(topLineLoan)}</strong>
+                    <span>{PERCENT.format(topLineLoanShare ?? 0)} av nettolönen</span>
+                  </div>
+                  <div className={`kpi-card ${topLineLeftover < 0 ? "negative" : ""}`}>
+                    <p>Kvar av nettolön</p>
+                    <strong>{SEK.format(topLineLeftover ?? 0)}</strong>
+                    <span>{topLineLeftover < 0 ? "Saknas för planen" : "Efter alla kostnader"}</span>
+                  </div>
+                </div>
+              )}
+
+              <form className="calculator-form" onSubmit={(event) => event.preventDefault()}>
+          {activeSection === "income" && (
+          <section className="form-section" id="section-income">
             <div className="section-header">
               <div>
                 <h2>Inkomst & skatt</h2>
@@ -3757,7 +4066,9 @@ useEffect(() => {
               </div>
             </div>
           </section>
-          <section className="form-section">
+          )}
+          {activeSection === "property" && (
+          <section className="form-section" id="section-property">
             <div className="section-header">
               <div>
                 <h2>Fastighetsinformation</h2>
@@ -3834,22 +4145,13 @@ useEffect(() => {
                         placeholder="t.ex. 145"
                       />
                     </label>
-                    <label>
-                      <span>Övriga byggnader</span>
-                      <textarea
-                        name="buildings"
-                        value={propertyInfo.buildings}
-                        onChange={handlePropertyInfoChange}
-                        placeholder="t.ex. garage, friggebod, förråd"
-                      />
-                    </label>
                   </div>
-                  <div className="property-buildings">
-                    <div className="property-buildings-header">
-                      <div>
-                        <h4>Övriga byggnader</h4>
-                        <p>Lägg till garage, Attefallshus eller andra byggnader kopplade till fastigheten.</p>
-                      </div>
+              <div className="property-buildings">
+                <div className="property-buildings-header">
+                  <div>
+                    <h4>Övriga byggnader</h4>
+                    <p>Lägg till garage, Attefallshus eller andra byggnader kopplade till fastigheten.</p>
+                  </div>
                       <button type="button" className="ghost" onClick={handleAddBuilding}>
                         Lägg till byggnad
                       </button>
@@ -3962,6 +4264,7 @@ useEffect(() => {
                       <span>Leverantör</span>
                       <input
                         type="text"
+                        list="broadband-providers"
                         name="provider"
                         value={broadband.provider}
                         onChange={handleBroadbandChange}
@@ -4062,6 +4365,116 @@ useEffect(() => {
                   <p className="field-note">Lägg till bredband för att se en sammanställning av kostnad och hastighet.</p>
                 )}
               </div>
+              <datalist id="broadband-providers">
+                {providerOptions.broadband.map((name) => (
+                  <option key={`bb-${name}`} value={name} />
+                ))}
+              </datalist>
+              <div className="insurance-card">
+                <div className="property-buildings-header">
+                  <div>
+                    <h4>Hemförsäkring</h4>
+                    <p>Koppla en försäkring till fastigheten.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setShowInsuranceForm((prev) => !prev)}
+                  >
+                    {showInsuranceForm ? "Dölj hemförsäkring" : "Lägg till hemförsäkring"}
+                  </button>
+                </div>
+                {showInsuranceForm ? (
+                  <>
+                    <div className="insurance-grid">
+                      <label>
+                        <span>Bolag</span>
+                        <input
+                          type="text"
+                          list="insurance-providers"
+                          name="provider"
+                          value={propertyInsurance.provider}
+                          onChange={handlePropertyInsuranceChange}
+                          placeholder="t.ex. If"
+                        />
+                      </label>
+                      <label>
+                        <span>Premie (kr/år)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          name="annualPremium"
+                          value={propertyInsurance.annualPremium}
+                          onChange={handlePropertyInsuranceChange}
+                          placeholder="t.ex. 4800"
+                        />
+                      </label>
+                      <label>
+                        <span>Självrisk (kr)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          name="deductible"
+                          value={propertyInsurance.deductible}
+                          onChange={handlePropertyInsuranceChange}
+                          placeholder="t.ex. 1500"
+                        />
+                      </label>
+                    </div>
+                    <p className="metric-note">
+                      Vi sparar försäkringen kopplad till denna fastighet och kan senare jämföra mot genomsnitt.
+                    </p>
+                  </>
+                ) : propertyInsurance.provider ? (
+                  <div className="insurance-summary-card">
+                    <div>
+                      <p>Försäkringskostnad</p>
+                      <strong>{SEK.format(propertyInsuranceMonthly)} / mån</strong>
+                      <span>≈ {SEK.format(propertyInsuranceMonthly * 12)} per år</span>
+                    </div>
+                    <div className="insurance-description">
+                      <p>Du försäkrar:</p>
+                      <ul>
+                        <li>
+                          Fastighet: {propertyInfo.name || "ej namngiven"}{" "}
+                          {propertyInfo.areaSqm
+                            ? `(${NUMBER.format(Number(propertyInfo.areaSqm))} kvm)`
+                            : ""}
+                        </li>
+                        {propertyInfo.designation && (
+                          <li>Beteckning: {propertyInfo.designation}</li>
+                        )}
+                        {propertyInfo.buildings && propertyInfo.buildings.length > 0 ? (
+                          <li>
+                            Övriga byggnader:{" "}
+                            {propertyInfo.buildings
+                              .map((building) => {
+                                const label =
+                                  BUILDING_TYPES.find((type) => type.id === building.type)?.label ||
+                                  building.type ||
+                                  "Byggnad";
+                                const area = building.area
+                                  ? ` (${NUMBER.format(Number(building.area))} kvm)`
+                                  : "";
+                                return `${label}${area}`;
+                              })
+                              .join(", ")}
+                          </li>
+                        ) : (
+                          <li>Inga extra byggnader registrerade.</li>
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="field-note">Ingen hemförsäkring registrerad.</p>
+                )}
+              </div>
+              <datalist id="insurance-providers">
+                {providerOptions.insurance.map((name) => (
+                  <option key={`ins-${name}`} value={name} />
+                ))}
+              </datalist>
               <div className="electricity-card property-electricity">
                   <div>
                     <h4>Elförbrukning (kopplad till fastigheten)</h4>
@@ -4202,10 +4615,9 @@ useEffect(() => {
                 )}
               </div>
                   {hasPropertyValue && activeLoanPrincipal > 0 && (
-                    <div className="property-summary">
-                      <div>
-                        <p>Belåningsgrad</p>
-                      <h3>{PERCENT.format(currentLoanToValue ?? 0)}</h3>
+                    <div className="ltv-card">
+                      <span>Belåningsgrad</span>
+                      <strong>{PERCENT.format(currentLoanToValue ?? 0)}</strong>
                       <span>
                         Totala lån {SEK.format(activeLoanPrincipal)} av {SEK.format(propertyValueNumber)} i värde.
                       </span>
@@ -4214,12 +4626,11 @@ useEffect(() => {
                           Amorteringskrav enligt regel: <strong>{amortizationRequirement.percent}%</strong> / år
                         </span>
                       )}
+                      <div className="progress muted">
+                        <div style={{ width: `${ltvProgress}%` }} />
+                      </div>
                     </div>
-                    <div className="progress muted">
-                      <div style={{ width: `${ltvProgress}%` }} />
-                    </div>
-                  </div>
-                )}
+                  )}
               </>
             ) : hasPropertyDetails ? (
               <div className="property-summary-card">
@@ -4375,7 +4786,9 @@ useEffect(() => {
               </div>
             )}
           </section>
-          <section className="form-section">
+          )}
+          {activeSection === "loans" && (
+          <section className="form-section" id="section-loans">
             <div className="section-header">
               <div>
                 <h2>Bolån</h2>
@@ -4398,6 +4811,16 @@ useEffect(() => {
                           value={loan.name}
                           onChange={(event) => handleLoanChange(loan.id, "name", event.target.value)}
                           placeholder={`Lån ${index + 1}`}
+                        />
+                      </label>
+                      <label>
+                        <span>Bank</span>
+                        <input
+                          type="text"
+                          list="bank-providers"
+                          value={loan.bank || ""}
+                          onChange={(event) => handleLoanChange(loan.id, "bank", event.target.value)}
+                          placeholder="t.ex. Swedbank"
                         />
                       </label>
                     </div>
@@ -4530,6 +4953,11 @@ useEffect(() => {
                 {activeLoans.length} av {MAX_LOANS} lån aktiva
               </span>
             </div>
+            <datalist id="bank-providers">
+              {providerOptions.bank.map((name) => (
+                <option key={`bank-${name}`} value={name} />
+              ))}
+            </datalist>
             <div className="field inline">
               <label htmlFor="futureAmortizationPercent">
                 Scenario efter amorteringskrav (%)
@@ -4573,7 +5001,9 @@ useEffect(() => {
               )}
             </div>
           </section>
-          <section className="extra-costs">
+          )}
+          {activeSection === "costs" && (
+          <section className="extra-costs" id="section-costs">
             <div className="extra-header">
               <div>
                 <h3>Övriga kostnader</h3>
@@ -4845,7 +5275,9 @@ useEffect(() => {
               </ul>
             </div>
           </section>
-          <section className="savings-section">
+          )}
+          {activeSection === "savings" && (
+          <section className="savings-section" id="section-savings">
             <div className="extra-header">
               <div>
                 <h3>Sparande</h3>
@@ -4915,6 +5347,7 @@ useEffect(() => {
             <p className="cost-hint">Planera sparande för att se prognosen längre ned.</p>
             )}
           </section>
+          )}
           <div className="actions">
             <button
               type="button"
@@ -4941,6 +5374,7 @@ useEffect(() => {
           {error && <p className="error">{error}</p>}
         </form>
           </div>
+        </>
         )}
 
       {activeTab === "results" && (
@@ -4955,6 +5389,24 @@ useEffect(() => {
               <button type="button" className="ghost" onClick={handleExportPdf}>
                 Exportera PDF
               </button>
+            </div>
+            <div className="result-metrics">
+              <div className="metric-chip primary">
+                <span>Totalt att lägga undan</span>
+                <strong>{SEK.format(viewCombinedPlan)}</strong>
+              </div>
+              <div className="metric-chip">
+                <span>Bolån / mån</span>
+                <strong>{SEK.format(viewLoanMonthly)}</strong>
+              </div>
+              <div className="metric-chip">
+                <span>Övriga kostnader</span>
+                <strong>{SEK.format(extraMonthlyTotal)}</strong>
+              </div>
+              <div className={`metric-chip ${viewRemainingNetIncome < 0 ? "negative" : "positive"}`}>
+                <span>Kvar av nettolön</span>
+                <strong>{SEK.format(viewRemainingNetIncome ?? 0)}</strong>
+              </div>
             </div>
             {futureScenario && (
               <div className="scenario-switcher">
@@ -5602,143 +6054,6 @@ useEffect(() => {
         </section>
       )}
 
-      {customTabs.map((tab) =>
-        activeTab === tab.id ? (
-          <section key={tab.id} className="results custom-results">
-            <div className="results-header">
-              <div>
-                <h2>{tab.label}</h2>
-                <p>Din egen flik för anteckningar eller extra data.</p>
-              </div>
-              <button type="button" className="link-button" onClick={() => removeCustomTab(tab.id)}>
-                Ta bort flik
-              </button>
-            </div>
-            <textarea
-              className="custom-note"
-              placeholder="Skriv egna anteckningar eller lägg in siffror här..."
-              value={tab.note ?? ""}
-              onChange={(event) => handleCustomTabNoteChange(tab.id, event.target.value)}
-            />
-          </section>
-        ) : null,
-      )}
-      {activeTab === "tibber" && (
-        <section className="tibber-dev-panel">
-          <div className="tibber-header">
-            <div>
-              <p className="eyebrow subtle">Tibber modul</p>
-              <h2>Testa Tibber-integration</h2>
-              <p>
-                Utveckla mot Tibber utan att påverka budgeten. Ange en personal access token och kör
-                samma GraphQL-fråga som kalkylen använder när du importerar elpris och förbrukning.
-              </p>
-            </div>
-            <div className="tibber-actions">
-              <button type="button" className="ghost" onClick={handleAdoptTibberToken}>
-                Använd token från kalkylen
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={handleTibberTest}
-                disabled={tibberTestState.loading}
-              >
-                {tibberTestState.loading ? "Hämtar..." : "Testa mot Tibber"}
-              </button>
-            </div>
-          </div>
-          <div className="tibber-test-grid">
-            <label>
-              <span>Tibber personal access token</span>
-              <input
-                type="text"
-                value={tibberTestState.token}
-                onChange={(event) =>
-                  setTibberTestState((prev) => ({ ...prev, token: event.target.value }))
-                }
-                placeholder="Skapa token under Tibber → Profile → Developer"
-              />
-            </label>
-          </div>
-          {tibberTestState.error && <p className="error">{tibberTestState.error}</p>}
-          {tibberTestState.response && (
-            <div className="tibber-response">
-              <h3>Senaste svar</h3>
-              <div className="tibber-kpis">
-                <div>
-                  <span>Pris just nu</span>
-                  <strong>
-                    {tibberTestState.response.price != null
-                      ? `${tibberTestState.response.price.toFixed(2)} kr/kWh`
-                      : "—"}
-                  </strong>
-                </div>
-                <div>
-                  <span>Senaste månadsförbrukning</span>
-                  <strong>
-                    {tibberTestState.response.monthlyConsumption != null
-                      ? `${NUMBER.format(tibberTestState.response.monthlyConsumption)} kWh`
-                      : "—"}
-                  </strong>
-                </div>
-                <div>
-                  <span>Årsförbrukning</span>
-                  <strong>
-                    {tibberTestState.response.annualConsumption != null
-                      ? `${NUMBER.format(tibberTestState.response.annualConsumption)} kWh`
-                      : "—"}
-                  </strong>
-                </div>
-                <div>
-                  <span>Kostnad denna månad</span>
-                  <strong>
-                    {tibberTestState.response.monthlyCost != null
-                      ? SEK.format(tibberTestState.response.monthlyCost)
-                      : "—"}
-                  </strong>
-                </div>
-                <div>
-                  <span>Föregående månad</span>
-                  <strong>
-                    {tibberTestState.response.previousMonthlyCost != null
-                      ? SEK.format(tibberTestState.response.previousMonthlyCost)
-                      : "—"}
-                  </strong>
-                </div>
-              </div>
-              <pre className="code-block">
-                {JSON.stringify(tibberTestState.response, null, 2)}
-              </pre>
-            </div>
-          )}
-          <div className="tibber-info">
-            <div>
-              <h3>GraphQL-frågan</h3>
-              <pre className="code-block">
-{`{
-  viewer {
-    homes {
-      currentSubscription { priceInfo { current { total } } }
-      monthly: consumption(resolution: MONTHLY, first: 12) {
-        nodes { from consumption }
-      }
-    }
-  }
-}`}
-              </pre>
-            </div>
-            <div>
-              <h3>Kom ihåg</h3>
-              <ul>
-                <li>Tokenen behöver läsrättigheter på hemmet.</li>
-                <li>Varje klick gör ett liveanrop mot Tibbers API.</li>
-                <li>Data här påverkar inte budgeten förrän du importerar via kalkylens el-sektion.</li>
-              </ul>
-            </div>
-          </div>
-        </section>
-      )}
       {activeTab === "outcome" && (
         <section className="results outcome-panel">
           <div className="results-header">
@@ -6039,8 +6354,8 @@ useEffect(() => {
           </section>
         )}
       </div>
-        </>
-        )}
+      </>
+      )}
     </main>
     </div>
   );
