@@ -1214,19 +1214,19 @@ body {
 }
 
 .ltv-card {
-  background: linear-gradient(135deg, #2563eb, #38bdf8);
-  color: #f8fafc;
+  background: #ffffff;
+  color: #0f172a;
   border-radius: 14px;
   padding: 1rem;
-  border: 1px solid #1d4ed8;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
 }
 
 .ltv-card span {
-  color: #dbeafe;
+  color: #475569;
 }
 
 .ltv-card strong {
@@ -1436,9 +1436,9 @@ body {
 
 .loan-card-header {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: flex-start;
-  gap: 0.5rem;
+  gap: 0.6rem;
 }
 
 .loan-card-actions {
@@ -1752,18 +1752,20 @@ body {
 }
 
 .electricity-summary {
-  background: #2563eb;
-  color: #f8fafc;
+  background: #ffffff;
+  color: #0f172a;
   border-radius: 12px;
-  padding: 0.75rem 1rem;
+  padding: 0.9rem 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.35rem;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
 }
 
 .electricity-summary span {
   font-size: 0.85rem;
-  color: #e0e7ff;
+  color: #475569;
 }
 
 .tibber-cost-hints {
@@ -3054,7 +3056,9 @@ button.primary {
 .app.dark .income-person-card,
 .app.dark .income-summary-card,
 .app.dark .tax-adjustment-card,
-.app.dark .insurance-summary-card {
+.app.dark .insurance-summary-card,
+.app.dark .ltv-card,
+.app.dark .electricity-summary {
   background: rgba(15, 23, 42, 0.75);
   border-color: #1e293b;
   color: #e2e8f0;
@@ -3074,6 +3078,11 @@ button.primary {
 .app.dark .income-summary-grid span,
 .app.dark .person-net-summary span,
 .app.dark .insurance-description {
+  color: #cbd5f5;
+}
+
+.app.dark .electricity-summary span,
+.app.dark .ltv-card span {
   color: #cbd5f5;
 }
 

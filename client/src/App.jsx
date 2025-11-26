@@ -4813,6 +4813,8 @@ useEffect(() => {
                           placeholder={`Lån ${index + 1}`}
                         />
                       </label>
+                    </div>
+                    <div className="loan-card-grid">
                       <label>
                         <span>Bank</span>
                         <input
@@ -4823,8 +4825,6 @@ useEffect(() => {
                           placeholder="t.ex. Swedbank"
                         />
                       </label>
-                    </div>
-                    <div className="loan-card-grid">
                       <label>
                         <span>Belopp (kr)</span>
                         <input
