@@ -3267,6 +3267,27 @@ button.primary {
   .hero .lead {
     font-size: 0.95rem;
   }
+
+  .results-header,
+  .admin-console-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .result-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .section-nav {
+    position: static;
+  }
+
+  .auth-actions button,
+  .setup-actions button,
+  .admin-console-tabs button {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 @media (max-width: 640px) {
